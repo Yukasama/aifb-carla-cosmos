@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Kontrollraum-Palette: neutrale Blaugrau-Toene + drei Signalfarben */
+@theme {
+  --color-ink-950: #090b0e;
+  --color-ink-900: #0f1216;
+  --color-ink-850: #141820;
+  --color-ink-800: #1c212a;
+  --color-ink-700: #2a313c;
+  --color-ink-500: #6b7484;
+  --color-ink-300: #a9b1be;
+  --color-ink-100: #e7eaee;
+
+  --color-go: #3ddc97;
+  --color-warn: #f5b942;
+  --color-fail: #ff6b6b;
+  --color-signal: #5cc8ff;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 50% -200px, rgb(92 200 255 / 0.06), transparent),
+    var(--color-ink-950);
+  color: var(--color-ink-100);
+}
+
+::selection {
+  background: rgb(92 200 255 / 0.3);
+}

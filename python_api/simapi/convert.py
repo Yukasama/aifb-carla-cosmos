@@ -1,0 +1,146 @@
+"""Aufgenommene Clips umwandeln: python -m simapi.convert <clip|export-ordner> ...
+
+Pro Clip zwei Ausgaben, jeweils erst in <name>.partial gebaut und dann umbenannt:
+
+  cosmos/   Eingabe fuer Cosmos-Transfer2.5: fuenf Videos und transfer2.5.json (siehe simapi.cosmos)
+  dair/     3D-Labels fuer BEVHeight, HeightFormer und CoBEV im Format von DAIR-V2X-I (siehe simapi.dair)
+
+Laeuft nach jedem fertigen Clip automatisch (Ausgabe in <clip>/convert.log). Schon umgewandelte
+Teile werden uebersprungen, --force baut sie neu. Den Datensatz baut danach python -m simapi.dataset.
+"""
+
+import argparse
+import json
+import logging
+import os
+import shutil
+import sys
+import time
+
+from . import cosmos, dair
+
+log = logging.getLogger('simapi.convert')
+OUTPUTS = ('cosmos', 'dair')
+
+
+def replace_dir(src, dst, tries=40, wait=0.25):
+    """os.replace mit Wiederholung: unter Windows halten Virenscanner, Indexer oder ein Editor frisch
+    geschriebene Dateien kurz offen, dann scheitert das Umbenennen des Ordners mit Zugriff verweigert."""
+    for i in range(tries):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(wait)
+
+
+def find_clips(paths):
+    """Clip-Ordner (mit clip.json) direkt oder eine Ebene darunter; laufende Aufnahmen (.partial) nicht."""
+    for p in paths:
+        if os.path.isfile(os.path.join(p, 'clip.json')):
+            yield p
+        elif os.path.isdir(p):
+            for sub in sorted(os.listdir(p)):
+                if not sub.endswith('.partial') and os.path.isfile(os.path.join(p, sub, 'clip.json')):
+                    yield os.path.join(p, sub)
+
+
+def _build(clip, name, fn, force):
+    """Ausgabe `name` per fn(tmp_ordner) bauen; False, wenn sie schon da ist."""
+    out = os.path.join(clip, name)
+    if os.path.isdir(out) and not force:
+        return False
+    tmp = out + '.partial'
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    fn(tmp)
+    shutil.rmtree(out, ignore_errors=True)
+    replace_dir(tmp, out)
+    return True
+
+
+def convert(clip, args):
+    with open(os.path.join(clip, 'clip.json'), encoding='utf-8') as f:
+        meta = json.load(f)
+    have_frames = os.path.isdir(os.path.join(clip, 'frames'))
+    todo = [n for n in OUTPUTS if args.force or not os.path.isdir(os.path.join(clip, n))]
+    if todo and not have_frames:
+        raise FileNotFoundError('Rohbilder (frames/) geloescht, %s laesst sich nicht mehr bauen' % ', '.join(todo))
+    if not todo:
+        log.info('%s: schon umgewandelt (--force baut neu)', clip)
+
+    def videos(out):
+        n = cosmos.build(clip, meta, out, args.size, args.edge_preset, args.blur_preset, args.crf, args.prompt)
+        log.info('%s: Cosmos-Eingabe, %d Frames, %dx%d, %d Segmente', clip, meta['frames'], *args.size, n)
+
+    def labels(out):
+        info = dair.build(clip, meta, out, args.every, args.allow_unlabeled)
+        log.info('%s: DAIR-Labels fuer %d Frames, %d Objekte, Kamera %.1f m ueber der Fahrbahn',
+                 clip, len(info['frames']), info['objects'], info['camera_height'])
+        if info['unlabeled']:
+            log.warning('%s: Fahrzeuge oder Personen ohne Label im Bild (Frame: Anzahl) %s',
+                        clip, info['unlabeled'])
+
+    _build(clip, 'cosmos', videos, args.force)
+    _build(clip, 'dair', labels, args.force)
+    if args.drop_frames and have_frames:
+        shutil.rmtree(os.path.join(clip, 'frames'))
+        log.info('%s: Rohbilder geloescht', clip)
+
+
+def _size(s):
+    try:
+        w, h = (int(v) for v in s.lower().split('x'))
+    except ValueError:
+        raise argparse.ArgumentTypeError('BREITExHOEHE, z.B. 1280x720')
+    if w < 16 or h < 16:
+        raise argparse.ArgumentTypeError('mindestens 16x16')
+    return w, h
+
+
+def _positive(s):
+    v = int(s)
+    if v < 1:
+        raise argparse.ArgumentTypeError('mindestens 1')
+    return v
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog='python -m simapi.convert', description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('paths', nargs='+', metavar='ORDNER', help='Clip-Ordner oder Export-Ordner mit Clips')
+    p.add_argument('--force', action='store_true', help='vorhandene cosmos/ und dair/ neu bauen')
+    p.add_argument('--drop-frames', action='store_true',
+                   help='Rohbilder (frames/) danach loeschen; ein Neuaufbau ist dann nicht mehr moeglich')
+    g = p.add_argument_group('Cosmos')
+    g.add_argument('--size', type=_size, default=cosmos.SIZE, metavar='BxH', help='Videogroesse (Default 1920x1080)')
+    g.add_argument('--edge-preset', choices=cosmos.EDGE_PRESETS, default='medium')
+    g.add_argument('--blur-preset', choices=cosmos.BLUR_PRESETS, default='medium')
+    g.add_argument('--crf', type=int, choices=range(0, 52), default=0, metavar='0-51',
+                   help='H.264-Qualitaet, 0 = verlustfrei (Default)')
+    g.add_argument('--prompt', default=cosmos.PROMPT, help='Prompt in transfer2.5.json')
+    g = p.add_argument_group('Detektoren')
+    g.add_argument('--every', type=_positive, default=1,
+                   help='jeden N-ten Frame beschriften (Default 1: alle Frames)')
+    g.add_argument('--allow-unlabeled', action='store_true',
+                   help='Export trotz sichtbarer Fahrzeuge/Personen ohne 3D-Label erlauben')
+    args = p.parse_args(argv)
+    logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
+
+    clips = list(find_clips(args.paths))
+    if not clips:
+        log.error('Keine Clips (Ordner mit clip.json) gefunden')
+        return 1
+    failed = 0
+    for clip in clips:
+        try:
+            convert(clip, args)
+        except Exception as e:  # naechsten Clip trotzdem versuchen
+            log.error('%s: %s', clip, e)
+            failed += 1
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

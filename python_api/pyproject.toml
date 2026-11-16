@@ -1,0 +1,13 @@
+[project]
+name = "python-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # nur dafuer gibt es Wheels; macOS kann so wenigstens testen, umwandeln und --dry-run
+    "carla==0.9.16; (sys_platform == 'linux' and platform_machine == 'x86_64') or sys_platform == 'win32'",
+    "imageio-ffmpeg>=0.8.1",
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
+]

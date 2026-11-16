@@ -1,0 +1,64 @@
+# Pfade auf obi unter /share/Yacin. Jede Stufe nimmt per Default diese Datei (--config fuer eine andere).
+# Ausgaben landen unter /share/Yacin/pipeline; ein schon vorhandener Ausgabeordner ist ein Fehler.
+# Modelle werden nie heruntergeladen (HF offline); Python-Pakete installiert uv beim ersten Lauf.
+
+[paths]
+clips = "/share/Yacin/carla_cosmos_sample"  # simapi-Export: Clips mit clip.json, cosmos/, dair/
+datasets = "/share/Yacin/pipeline/datasets"
+runs = "/share/Yacin/pipeline/runs"
+
+[cosmos25]
+repo = "/share/Yacin/Cosmos/cosmos-transfer2.5"
+models = "/share/Yacin/Cosmos/cosmos-transfer2.5/models"  # HF-Hub-Cache (oder models/hub), wie ihn `hf download` ohne --local-dir anlegt
+uv = ["--extra", "cu128"]  # uv-Extra des Repos; cu130 fuer CUDA-13-Treiber
+output = "/share/Yacin/pipeline/cosmos25"
+gpus = ["0"]  # mehrere IDs starten torch.distributed.run
+disable_guardrails = false
+
+[cosmos3]
+repo = "/share/Yacin/Cosmos/cosmos-framework"
+checkpoint = "/share/Yacin/Cosmos/models/Cosmos3-Nano-Sim-Transfer"
+text_tokenizer = "/share/Yacin/Cosmos/models/Cosmos3-Nano-tok"  # nvidia/Cosmos3-Nano, text_tokenizer/
+vae = "/share/Yacin/Cosmos/models/Wan2.2-VAE/Wan2.2_VAE.pth"  # Wan-AI/Wan2.2-TI2V-5B
+uv = ["--group", "cu128"]  # uv-Gruppe des Repos; cu130 fuer CUDA-13-Treiber
+control = "edge"  # Sim-Transfer nimmt genau eine Steuerung: edge, blur, depth oder seg
+output = "/share/Yacin/pipeline/cosmos3"
+gpus = ["0"]
+
+[dataset]
+val_fraction = 0.2  # synthetische Validierung nach Kameraposition
+seed = 0
+
+[dair]
+root = "/share/Yacin/Models/BEVHeight++/data/dair-v2x-i"  # DAIR-V2X-I single-infrastructure-side (Rohformat)
+split = "/share/Yacin/Models/BEVHeight++/data/single-infrastructure-split-data.json"
+prepared = "/share/Yacin/pipeline/dair-prepared"
+
+# Backbones: ImageNet-Gewichte von torchvision (https://download.pytorch.org/models/<datei>)
+["bevheight++"]
+repo = "/share/Yacin/Models/BEVHeight++"
+experiment = "/share/Yacin/Models/BEVHeight++/exps/dair-v2x/bev_height_plus_lss_r101_864_1536_256x256_102.py"
+model_class = "BEVHeightPlusLightningModel"
+backbone_checkpoint = "~/.cache/torch/hub/checkpoints/resnet101-63fe2227.pth"
+epochs = 60
+
+[cobev]
+repo = "/share/Yacin/Models/CoBEV"
+experiment = "/share/Yacin/Models/CoBEV/exps/dair-v2x/cobev_r50_128x128.py"
+model_class = "CoBEVLightningModel"
+backbone_checkpoint = "~/.cache/torch/hub/checkpoints/resnet50-0676ba61.pth"
+epochs = 100
+
+[heightformer]
+repo = "/share/Yacin/Models/HeightFormer"
+experiment = "/share/Yacin/Models/HeightFormer/exps/dair-v2x/height_former_r34_836_1536_256_256_102.py"
+model_class = "HeightFormerLightningModel"
+backbone_checkpoint = "~/.cache/torch/hub/checkpoints/resnet34-b627a593.pth"
+epochs = 50
+
+[detector_runtime]
+gpus = ["0"]
+batch_size = 2  # pro GPU
+workers = 4
+precision = 32
+seed = 0

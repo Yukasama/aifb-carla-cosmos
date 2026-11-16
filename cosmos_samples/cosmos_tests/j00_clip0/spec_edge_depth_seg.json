@@ -1,0 +1,19 @@
+{
+  "name": "edge_depth_seg",
+  "prompt": "A static roadside traffic camera mounted on a pole overlooks a city street and intersection on a sunny day. Realistic cars, real asphalt and sidewalk textures, natural lighting and shadows, photorealistic, high detail.",
+  "video_path": "C:\\Users\\botan\\cosmos_tests\\j00_clip0\\rgb.mp4",
+  "guidance": 3,
+  "seed": 1,
+  "edge": {
+    "control_path": "C:\\Users\\botan\\cosmos_tests\\j00_clip0\\edge.mp4",
+    "control_weight": 1.0
+  },
+  "depth": {
+    "control_path": "C:\\Users\\botan\\cosmos_tests\\j00_clip0\\depth.mp4",
+    "control_weight": 0.5
+  },
+  "seg": {
+    "control_path": "C:\\Users\\botan\\cosmos_tests\\j00_clip0\\seg.mp4",
+    "control_weight": 0.5
+  }
+}
