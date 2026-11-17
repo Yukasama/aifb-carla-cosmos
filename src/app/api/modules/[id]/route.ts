@@ -2,7 +2,7 @@ import { checkSameOrigin, errorResponse, jsonError } from "@/lib/api";
 import { isModuleId } from "@/lib/modules";
 import { manager } from "@/lib/process-manager";
 
-type Body = { action?: string; values?: unknown; conn?: unknown; name?: unknown };
+type Body = { action?: string; values?: unknown; conn?: unknown; name?: unknown; fov?: unknown };
 
 export async function POST(req: Request, ctx: RouteContext<"/api/modules/[id]">) {
   const denied = checkSameOrigin(req);
@@ -27,6 +27,9 @@ export async function POST(req: Request, ctx: RouteContext<"/api/modules/[id]">)
       case "gotoCamera":
         manager.camera(id, "goto", body.name);
         break;
+      case "setFov":
+        manager.fov(id, body.fov);
+        break;
       case "disconnect":
         void manager.stop(id); // laeuft im Hintergrund weiter, Client pollt den Zustand
         break;
@@ -34,7 +37,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/modules/[id]">)
         manager.kill(id);
         break;
       default:
-        return jsonError("action muss connect, update, saveCamera, gotoCamera, disconnect oder kill sein.", 400);
+        return jsonError("action muss connect, update, saveCamera, gotoCamera, setFov, disconnect oder kill sein.", 400);
     }
     return Response.json({ modules: manager.statusAll() });
   } catch (err) {

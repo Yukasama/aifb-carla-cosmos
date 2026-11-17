@@ -1,11 +1,9 @@
 "use client";
 
-import type { ModuleId } from "@/lib/modules";
 import type { FrameObject, FrameObjects } from "@/lib/types";
 
-import { usePoll } from "./hooks";
-
-const POLL_MS = 500;
+/** Abstand, in dem die Karte die Statusdatei abfragt (Objekte und Sichtfeld) */
+export const OBJECTS_POLL_MS = 500;
 /** Älter heißt: Python schreibt nicht mehr (CARLA hängt oder ist pausiert) */
 const STALE_MS = 2000;
 
@@ -75,9 +73,7 @@ function Visibility({ o }: { o: FrameObject }) {
 }
 
 /** Fahrzeuge und Fußgänger im Kamerabild des laufenden Prozesses, nach Distanz sortiert. */
-export function ObjectsSection({ id, running }: { id: ModuleId; running: boolean }) {
-  const { data } = usePoll<FrameObjects>(running ? `/api/modules/${id}/objects` : null, POLL_MS);
-
+export function ObjectsSection({ running, data }: { running: boolean; data: FrameObjects | null }) {
   if (!running) {
     return (
       <p className="text-xs leading-snug text-ink-500">

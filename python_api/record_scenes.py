@@ -1,12 +1,17 @@
 """Szenen ohne Fenster aufnehmen: startet CARLA headless und nimmt Clips aus den gespeicherten
 Kamerapositionen (cameras.json) auf, gleichmaessig verteilt.
 
-    uv run python record_scenes.py                                  # 20000 Frames auf alle Positionen
-    uv run python record_scenes.py --frames 93                      # Testlauf: ein Clip
+    uv run python record_scenes.py                                  # 20000 Frames auf alle Positionen, dazu Holdout
+    uv run python record_scenes.py --frames 93                      # Testlauf: ein Clip, dazu ein Holdout-Clip
     uv run python record_scenes.py --frames 4000 --positions Museum "Kreuzung 1"
 
 Gezaehlt werden aufgenommene Frames (16 fps), immer in ganzen Clips zu 93 Frames: 20000 Frames
 auf 8 Positionen sind 216 Clips, je Position 27 Clips = 2511 Frames, insgesamt 20088.
+Die Holdout-Position (--holdout, Default "Holdout") zaehlt nicht dazu: Sie bekommt zusaetzlich so
+viele Clips wie eine Trainingsposition (hier 27 = 2511 Frames, zusammen 22599) und landet in
+<export-dir>/holdout/. Das sind reine Testdaten: run_cosmos.py und der Trainingsdatensatz sehen nur
+die Clips direkt im Export-Ordner, und clip.json traegt "holdout": true, womit simapi.dataset und
+run_cosmos.py solche Clips ablehnen. --no-holdout nimmt sie nicht auf.
 --quality fullhd (Default) nimmt 1920x1080 auf, --quality hd nimmt 1280x720 auf.
 Jeder fertige Clip wird wie in Sim Control umgewandelt: cosmos/ fuer Cosmos-Transfer2.5 und
 Cosmos 3, dair/ fuer die Detektoren mit jedem LABEL_EVERY-ten Frame als Trainingsbild.
@@ -38,6 +43,7 @@ import numpy as np
 
 from simapi import clips, cosmos, dair, presets
 from simapi.config import FPS, RESOLUTIONS, build_parser
+from simapi.convert import replace_dir
 from simapi.geometry import decode_instance, depth_m
 
 # ---------- Einstellungen ----------
@@ -50,17 +56,20 @@ HOST, PORT, TM_PORT = '127.0.0.1', 2000, 8000
 TOTAL_FRAMES = 20_000         # aufgenommene Frames ueber alle Positionen
 CLIP_FRAMES = 93              # Frames pro Clip = ein Abschnitt bei Cosmos
 LABEL_EVERY = 1               # jeder Frame bekommt Detektor-Labels
-VEHICLES, WALKERS = 50, 30
+VEHICLES, WALKERS = 90, 75
 EXPORT_DIR = '_out'           # relativ zu diesem Ordner
+HOLDOUT = 'Holdout'           # Kameraposition fuer Testdaten, nie fuers Training (--holdout)
+HOLDOUT_DIR = 'holdout'       # deren Clips: <export-dir>/holdout/
 DROP_FRAMES = False           # Rohbilder nach der Umwandlung loeschen (spart rund 520 MB pro Clip)
 PARALLEL_CONVERSIONS = 2      # Umwandlungen gleichzeitig neben der Aufnahme
 WARMUP_SECONDS = 10.0         # Simulationszeit nach dem Spawnen, bis der Verkehr fliesst
 SETTLE_SECONDS = 2.0          # nach jedem Kamerawechsel: Texturen der neuen Ansicht nachladen lassen
 CARLA_START_TIMEOUT = 300     # s
 CARLA_STOP_TIMEOUT = 30       # s nach SIGTERM (Linux), dann SIGKILL
-# Schaetzung vor der ersten Messung (gemessen headless auf RTX 2070 Super, 3 Kameras in 1920 x 1080)
-GUESS_FPS = 4.0
-GUESS_CONVERT_SECONDS = 30    # pro Clip, neben der Aufnahme
+# Schaetzung vor der ersten Messung (gemessen headless auf RTX 2070 Super, 3 Kameras in 1920 x 1080,
+# 90 Fahrzeuge und 75 Fussgaenger, jeder Frame beschriftet)
+GUESS_FPS = 3.0
+GUESS_CONVERT_SECONDS = 80    # pro Clip, neben der Aufnahme
 RAW_MB_PER_FRAME = 5.6
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -300,10 +309,29 @@ def distribute(frames, names):
     return {name: group for name, group in plan.items() if group}
 
 
+def with_holdout(plan, holdout):
+    """Holdout zusaetzlich und zuletzt, mit so vielen Clips wie die groesste Trainingsposition."""
+    if holdout in plan:
+        raise ValueError('Holdout-Position %s steht schon im Trainingsplan' % holdout)
+    return {**plan, holdout: [CLIP_FRAMES] * max(map(len, plan.values()))}
+
+
+def mark_holdout(clip):
+    """clip.json als Holdout kennzeichnen; simapi.dataset und run_cosmos.py lehnen solche Clips ab."""
+    path = os.path.join(clip, 'clip.json')
+    with open(path, encoding='utf-8') as f:
+        meta = json.load(f)
+    meta['holdout'] = True
+    with open(path + '.tmp', 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=1)
+    replace_dir(path + '.tmp', path)  # wiederholt, falls ein Virenscanner die Datei kurz offen haelt
+
+
 class Session:
-    def __init__(self, plan, cfg_off, cfg_on, conversions, display):
+    def __init__(self, plan, cfg_off, cfg_on, conversions, display, holdout=None):
         self.plan = plan                    # Position -> Liste von Clip-Laengen
         self.cfg_off, self.cfg_on = cfg_off, cfg_on
+        self.holdout = holdout              # diese Position nimmt nach <export-dir>/holdout/ auf
         self.conversions, self.display = conversions, display
         self.total_clips = sum(map(len, plan.values()))
         self.total_frames = sum(map(sum, plan.values()))
@@ -314,7 +342,17 @@ class Session:
         self.position = None
         self.started = None                 # Wanduhr bei der ersten Aufnahme
 
+    def configs(self, name):
+        """Einstellungen ohne und mit Aufnahme fuer eine Position; Holdout-Clips in einen eigenen Ordner."""
+        if name != self.holdout:
+            return self.cfg_off, self.cfg_on
+        off, on = copy.copy(self.cfg_off), copy.copy(self.cfg_on)
+        off.export_dir = on.export_dir = os.path.join(self.cfg_on.export_dir, HOLDOUT_DIR)
+        return off, on
+
     def on_clip(self, clip):
+        if self.position == self.holdout:
+            mark_holdout(clip)
         if not self.done[self.position]:  # erster Clip: taugt die Kamera ueberhaupt?
             problem = view_problem(clip)
             if problem:
@@ -339,7 +377,8 @@ class Session:
         frames = sum(self.frames_done.values()) + running
         total = self.total_frames
         wanted, conv = len(self.plan[self.position]), self.conversions
-        parts = ['[%d/%d %s]' % (index, len(self.plan), self.position),
+        parts = ['[%d/%d %s%s]' % (index, len(self.plan), self.position,
+                                   ', Holdout-Testdaten' if self.position == self.holdout else ''),
                  note or 'Clip %d/%d' % (min(self.done[self.position] + 1, wanted), wanted),
                  '%s/%s Frames (%.1f %%)' % (num(frames), num(total), 100.0 * frames / total)]
         if self.started is not None and frames:
@@ -355,14 +394,15 @@ class Session:
     def record(self, sim, name, index, frame):
         """Alle Clips einer Position aufnehmen; gibt den aktuellen Frame zurueck."""
         self.position = name
-        sim.apply(self.cfg_off)  # Kameras aus, waehrend der Spectator springt
+        cfg_off, cfg_on = self.configs(name)
+        sim.apply(cfg_off)  # Kameras aus, waehrend der Spectator springt
         sim.goto_camera(name)
         until, ticks = time.monotonic() + SETTLE_SECONDS, 0
         while ticks < 30 or time.monotonic() < until:
             frame = sim.advance(frame)
             ticks += 1
             self.show(sim, index, 'Kamera ausrichten')
-        cfg = copy.copy(self.cfg_on)
+        cfg = copy.copy(cfg_on)
         cfg.clip_frames = self.plan[name][0]
         sim.apply(cfg)
         if self.started is None:
@@ -387,11 +427,12 @@ class Session:
         return frame
 
 
-def check_plan(plan, args):
+def check_plan(plan, args, holdout=None):
     """Plan, Platzbedarf und grobe Dauer ausgeben; bricht ab, wenn der Platz nicht reicht."""
     lengths = [n for group in plan.values() for n in group]
     n_clips, frames = len(lengths), sum(lengths)
     images = sum(len(range(0, n, args.every)) for n in lengths)
+    test_images = sum(len(range(0, n, args.every)) for n in plan.get(holdout, []))
     w, h = RESOLUTIONS[args.quality]
     raw_mb = RAW_MB_PER_FRAME * w * h / (1920 * 1080)
     raw_gb = frames * raw_mb / 1024
@@ -402,12 +443,16 @@ def check_plan(plan, args):
     while not os.path.isdir(probe):
         probe = os.path.dirname(probe)
     free_gb = shutil.disk_usage(probe).free / 2 ** 30
-    print('Plan: %d Clips x %d Frames = %s Frames auf %d Positionen, Aufnahme %dx%d'
-          % (n_clips, CLIP_FRAMES, num(frames), len(plan), *RESOLUTIONS[args.quality]), flush=True)
+    print('Plan: %d Clips x %d Frames = %s Frames auf %d Positionen%s, Aufnahme %dx%d'
+          % (n_clips, CLIP_FRAMES, num(frames), len(plan) - (holdout in plan),
+             ' + Holdout' if holdout in plan else '', *RESOLUTIONS[args.quality]), flush=True)
     for name, group in plan.items():
-        print('      %s: %s Frames, %d Clips' % (name, num(sum(group)), len(group)), flush=True)
-    print('      %s Trainingsbilder (jeder %d. Frame), %d Fahrzeuge, %d Fussgaenger'
-          % (num(images), args.every, VEHICLES, WALKERS), flush=True)
+        print('      %s: %s Frames, %d Clips%s' % (name, num(sum(group)), len(group),
+                                                 ' -> %s/ (Testdaten: kein Cosmos, kein Training)' % HOLDOUT_DIR
+                                                 if name == holdout else ''), flush=True)
+    print('      %s Trainingsbilder%s (jeder %d. Frame), %d Fahrzeuge, %d Fussgaenger'
+          % (num(images - test_images), ' + %s Holdout-Bilder' % num(test_images) if holdout in plan else '',
+             args.every, VEHICLES, WALKERS), flush=True)
     guess = max(frames / GUESS_FPS, n_clips * GUESS_CONVERT_SECONDS / PARALLEL_CONVERSIONS) + GUESS_CONVERT_SECONDS
     print('      Speicher ~%.1f GB%s, frei %.0f GB'
           % (need_gb, '' if args.drop_frames else ' (davon Rohbilder %.1f GB)' % raw_gb, free_gb), flush=True)
@@ -430,7 +475,13 @@ def stop_on_eof():
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--frames', type=int, default=TOTAL_FRAMES, help='aufgenommene Frames insgesamt (Default %d)' % TOTAL_FRAMES)
-    p.add_argument('--positions', nargs='+', metavar='NAME', help='nur diese Kamerapositionen (Default: alle aus cameras.json)')
+    p.add_argument('--positions', nargs='+', metavar='NAME',
+                   help='nur diese Kamerapositionen fuers Training (Default: alle aus cameras.json ausser der Holdout-Position)')
+    p.add_argument('--holdout', default=HOLDOUT, metavar='NAME',
+                   help='Kameraposition fuer Testdaten (Default "%s"): nie im Training, zusaetzlich so viele Clips wie '
+                        'eine Trainingsposition, nach <export-dir>/%s/' % (HOLDOUT, HOLDOUT_DIR))
+    p.add_argument('--no-holdout', action='store_true',
+                   help='Holdout-Position nicht aufnehmen (bleibt trotzdem aus dem Training)')
     p.add_argument('--export-dir', default=EXPORT_DIR)
     p.add_argument('--quality', '--resolution', choices=RESOLUTIONS, default='fullhd',
                    help='fullhd/1920x1080 (Default) oder hd/1280x720')
@@ -457,14 +508,23 @@ def main(argv=None):
         stop_on_eof()
 
     saved = presets.load()
-    names = args.positions or list(saved)
+    names = args.positions or [n for n in saved if n != args.holdout]
     unknown = [n for n in names if n not in saved]
     if len(set(names)) != len(names):
         p.error('--positions darf keine Namen doppelt enthalten')
+    if args.holdout in names:
+        p.error('"%s" ist die Holdout-Position und kommt nie ins Training; mit --holdout eine andere waehlen'
+                % args.holdout)
     if not names or unknown:
         raise SystemExit('Unbekannte Kamerapositionen: %s (vorhanden: %s)' % (', '.join(unknown) or '-', ', '.join(saved) or 'keine'))
+    holdout = None if args.no_holdout else args.holdout
+    if holdout is not None and holdout not in saved:
+        raise SystemExit('Holdout-Position "%s" fehlt in cameras.json (vorhanden: %s); --holdout NAME waehlt eine '
+                         'andere, --no-holdout nimmt ohne auf' % (holdout, ', '.join(saved)))
     plan = distribute(args.frames, names)
-    check_plan(plan, args)
+    if holdout is not None:
+        plan = with_holdout(plan, holdout)
+    check_plan(plan, args, holdout)
     if args.dry_run:
         return 0
 
@@ -474,7 +534,8 @@ def main(argv=None):
         (['--drop-frames'] if args.drop_frames else [])
     parser = build_parser()
     conversions = Conversions(PARALLEL_CONVERSIONS, args.drop_frames, args.every)
-    session = Session(plan, parser.parse_args(base), parser.parse_args(base + ['--export']), conversions, display)
+    session = Session(plan, parser.parse_args(base), parser.parse_args(base + ['--export']), conversions, display,
+                      holdout)
 
     launched, code = [], 1
     try:
@@ -560,33 +621,46 @@ def run(args, saved, session, conversions, display, launched):
         unconverted += [clip for clip, _ in conversions.running.values()] + list(conversions.waiting)
     display.end()
 
+    holdout = session.holdout if session.holdout in session.plan else None
+    train = [name for name in session.plan if name != holdout]
     n = sum(session.done.values())
     count = sum(session.frames_done.values())
-    images = sum(len(range(0, length, args.every)) for name, group in session.plan.items() for length in group[:session.done[name]])
-    print('%s nach %s: %d Clips (%s Frames), %s Trainingsbilder, %d Umwandlungen fehlgeschlagen.'
+    images = {name: sum(len(range(0, length, args.every)) for length in group[:session.done[name]])
+              for name, group in session.plan.items()}
+    print('%s nach %s: %d Clips (%s Frames), %s Trainingsbilder%s, %d Umwandlungen fehlgeschlagen.'
           % ('Fertig' if finished else 'Gestoppt', dur(time.monotonic() - t0), n, num(count),
-             num(images), len(conversions.failed)), flush=True)
+             num(sum(images[name] for name in train)),
+             ' + %s Holdout-Bilder' % num(images[holdout]) if holdout else '', len(conversions.failed)), flush=True)
     for name, wanted in session.plan.items():
-        print('  %-24s %d/%d Frames, %d/%d Clips%s' % (name, session.frames_done[name], sum(wanted), session.done[name], len(wanted),
-                                         '  uebersprungen: ' + session.skipped[name] if name in session.skipped else ''),
+        print('  %-24s %d/%d Frames, %d/%d Clips%s%s' % (name, session.frames_done[name], sum(wanted), session.done[name], len(wanted),
+                                           '  (Holdout, %s/)' % HOLDOUT_DIR if name == holdout else '',
+                                           '  uebersprungen: ' + session.skipped[name] if name in session.skipped else ''),
               flush=True)
     if n and rec_seconds:
         each = conversions.seconds_each()
         print('Gemessen: Aufnahme %.1f fps%s (GUESS_FPS / GUESS_CONVERT_SECONDS oben im Skript)'
               % (count / rec_seconds, ', Umwandlung %s pro Clip' % dur(each) if each else ''), flush=True)
     if unconverted:
+        folders = ' '.join('"%s"' % d for d in sorted({os.path.dirname(c) for c in unconverted}))
         print('Nicht umgewandelt: %d Clips. Nachholen (ueberspringt schon umgewandelte):\n'
-              '  uv run python -m simapi.convert "%s" --every %d' % (len(unconverted), args.export_dir, args.every),
+              '  uv run python -m simapi.convert %s --every %d' % (len(unconverted), folders, args.every),
               flush=True)
     print('Ordner: %s' % args.export_dir, flush=True)
+    if holdout:
+        print('Holdout: %s (nicht fuer Cosmos und Training)' % os.path.join(args.export_dir, HOLDOUT_DIR), flush=True)
     budgets_met = all(session.frames_done[name] == sum(group) for name, group in session.plan.items())
     complete = finished and budgets_met and not conversions.failed and not unconverted and not session.skipped
-    report = {'complete': bool(complete), 'requested_frames': session.total_frames, 'recorded_frames': count,
+
+    def entry(name):
+        return {'requested_frames': sum(session.plan[name]), 'recorded_frames': session.frames_done[name],
+                'clips': session.clips_done[name], 'error': session.skipped.get(name)}
+    # Oben nur die Trainingsdaten; die Holdout-Position steht getrennt darunter
+    report = {'complete': bool(complete), 'requested_frames': sum(sum(session.plan[name]) for name in train),
+              'recorded_frames': sum(session.frames_done[name] for name in train),
               'capture_size': list(RESOLUTIONS[args.quality]), 'cosmos_size': list(cosmos.SIZE), 'fps': FPS,
               'label_every': args.every, 'conversion_failures': conversions.failed, 'unconverted': unconverted,
-              'positions': {name: {'requested_frames': sum(group), 'recorded_frames': session.frames_done[name],
-                                    'clips': session.clips_done[name], 'error': session.skipped.get(name)}
-                            for name, group in session.plan.items()}}
+              'positions': {name: entry(name) for name in train},
+              'holdout': dict(entry(holdout), position=holdout, dir=HOLDOUT_DIR) if holdout else None}
     os.makedirs(args.export_dir, exist_ok=True)
     path = os.path.join(args.export_dir, 'recording-%d.json' % time.time_ns())
     with open(path, 'w', encoding='utf-8') as f:

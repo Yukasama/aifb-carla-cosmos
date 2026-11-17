@@ -51,6 +51,8 @@ export interface StateResponse {
 export interface CameraPreset {
   name: string;
   map: string;
+  /** horizontales Sichtfeld in Grad (ältere Einträge ohne: 90) */
+  fov: number;
 }
 
 /** Objekt im Kamerabild, aus der Statusdatei des laufenden Python-Prozesses */
@@ -73,6 +75,8 @@ export interface FrameObject {
 
 export interface FrameObjects {
   frame: number;
+  /** aktuelles Sichtfeld der Kamera in Grad (null bei älteren Statusdateien) */
+  fov: number | null;
   /** Alter der Statusdatei */
   ageMs: number;
   /** nach Distanz sortiert */

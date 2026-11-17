@@ -33,13 +33,15 @@ def collect_specs(clips_root, version):
     specs = []
     names = set()
     for clip in clips:
+        meta = read_json(file(clip / 'clip.json'))
+        if meta.get('holdout'):
+            raise ValueError(f'{clip}: Holdout-Clip (Testdaten aus record_scenes.py), laeuft nicht durch Cosmos')
         path = file(clip / 'cosmos' / ('transfer2.5.json' if version == '2.5' else 'cosmos3.json'), 'Cosmos-Spec')
         spec = read_json(path)
         name = spec.get('name')
         if name != clip.name or name in names:
             raise ValueError(f'{path}: eindeutiger name = Clipname erforderlich')
         names.add(name)
-        meta = read_json(file(clip / 'clip.json'))
         manifest = read_json(file(path.parent / 'manifest.json', 'Padding-Manifest'))
         if manifest['source_frames'] != meta['frames'] or manifest['fps'] != meta['fps']:
             raise ValueError(f'{path}: Manifest stimmt nicht mit Aufnahme ueberein')

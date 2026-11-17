@@ -352,6 +352,24 @@ function DashboardInner() {
     return ok;
   }
 
+  // Sichtfeld der Kamera live setzen; ohne `busy`, damit der Schieberegler nicht die Karte sperrt
+  async function setFov(id: ModuleId, fov: number) {
+    try {
+      const res = await fetch(`/api/modules/${id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "setFov", fov }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+      setErrors((e) => (e[id] ? { ...e, [id]: undefined } : e));
+      return true;
+    } catch (err) {
+      setErrors((e) => ({ ...e, [id]: err instanceof Error ? err.message : String(err) }));
+      return false;
+    }
+  }
+
   const instances = carla.data?.instances ?? [];
 
   return (
@@ -425,6 +443,7 @@ function DashboardInner() {
                   onReset={() => setDrafts({ ...drafts, [id]: defaultValues(id) })}
                   onKill={() => void act(id, "kill")}
                   onCamera={(op, name) => camera(id, op, name)}
+                  onFov={(fov) => setFov(id, fov)}
                 />
               </li>
             </Fragment>

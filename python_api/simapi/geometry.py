@@ -54,6 +54,19 @@ def decode_instance(bgra):
     return bgra[..., 2], bgra[..., 1].astype(np.uint16) | (bgra[..., 0].astype(np.uint16) << 8)
 
 
+OBJECT_TAGS = (12, 13, 14, 15, 16, 18, 19)  # Pedestrian, Rider, Car, Truck, Bus, Motorcycle, Bicycle
+
+
+def object_pixels(tags, ids):
+    """16-Bit-Actor-ID -> Zahl seiner Fahrzeug-/Personenpixel im ganzen Bild.
+
+    Im ganzen Bild, nicht nur in der projizierten Box: Arme eines Fussgaengers ragen aus seiner
+    CARLA-Box und koennen am Bildrand sichtbar sein, waehrend die Box knapp ausserhalb liegt.
+    """
+    found, counts = np.unique(ids[np.isin(tags, OBJECT_TAGS)], return_counts=True)
+    return dict(zip(found.tolist(), counts.tolist()))
+
+
 def visible_pixels(ids, actor_id, box2d):
     """Pixel dieses Actors in seiner 2D-Box (0 = komplett verdeckt)."""
     x0, y0, x1, y1 = (int(v) for v in box2d)

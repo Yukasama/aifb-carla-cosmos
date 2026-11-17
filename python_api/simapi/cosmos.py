@@ -38,6 +38,7 @@ import cv2
 import imageio_ffmpeg
 import numpy as np
 
+from . import dair
 from .geometry import decode_instance, depth_m
 
 SIZE = (1920, 1080)
@@ -183,12 +184,18 @@ def _aspect(size):
     return '%d,%d' % (size[0] // g, size[1] // g)
 
 
-def count_objects(clip_dir, meta):
-    """Hoechste Zahl gleichzeitig beschrifteter Fahrzeuge, Zweiraeder und Personen im Clip."""
+def count_objects(clip_dir, meta, min_pixels=dair.MIN_PIXELS, min_share=dair.MIN_SHARE):
+    """Hoechste Zahl gleichzeitig beschrifteter Fahrzeuge, Zweiraeder und Personen im Clip.
+
+    Gezaehlt wird, was ein Label bekommt (simapi.dair: genug sichtbar), nicht jedes Objekt mit einem Pixel.
+    """
+    def frame_classes(i):
+        return [o['class'] for o in dair.visible_objects(clip_dir, meta, i, min_pixels, min_share)]
+
     most = {'vehicles': 0, 'two_wheelers': 0, 'pedestrians': 0}
-    for i in range(meta['frames']):
-        with open(os.path.join(clip_dir, meta['labels'] % i), encoding='utf-8') as f:
-            classes = [o['class'] for o in json.load(f)['objects']]
+    with ThreadPoolExecutor(WORKERS) as pool:
+        per_frame = list(pool.map(frame_classes, range(meta['frames'])))
+    for classes in per_frame:
         n = {'pedestrians': classes.count('pedestrian'),
              'two_wheelers': sum(c in ('bicycle', 'motorcycle') for c in classes)}
         n['vehicles'] = len(classes) - n['pedestrians'] - n['two_wheelers']
@@ -196,7 +203,14 @@ def count_objects(clip_dir, meta):
     return most
 
 
-def caption(counts, frames, fps, size):
+def lens(fov):
+    """Objektiv fuer die Bildbeschreibung nach horizontalem Sichtfeld (Kleinbild: 35 mm = 54 Grad, 70 mm = 29 Grad)."""
+    if fov >= 54:
+        return 'Wide-angle lens'
+    return 'Standard lens' if fov >= 29 else 'Telephoto lens'
+
+
+def caption(counts, frames, fps, size, fov=90.0):
     """Strukturierte Beschreibung fuer Cosmos 3 im Schema seiner Beispiel-Prompts (prompt.json)."""
     subjects = []
     if counts['vehicles']:
@@ -246,7 +260,7 @@ def caption(counts, frames, fps, size):
             'camera_angle': 'High angle, looking down at the street',
             'depth_of_field': 'Deep',
             'focus': 'Sharp focus across the whole scene',
-            'lens_focal_length': 'Wide-angle lens',
+            'lens_focal_length': lens(fov),
         },
         'style_medium': 'Live-action video',
         'artistic_style': 'Photorealistic traffic camera footage',
@@ -258,7 +272,8 @@ def caption(counts, frames, fps, size):
     }
 
 
-def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, prompt=PROMPT):
+def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, prompt=PROMPT,
+          min_pixels=dair.MIN_PIXELS, min_share=dair.MIN_SHARE):
     """<clip>/cosmos/-Inhalt nach out schreiben (Ordner existiert und ist leer)."""
     n, fps = meta['frames'], meta['fps']
     # Beide Tokenizer komprimieren zeitlich. Kurze Restclips bis mindestens 93 bzw. 4k+1
@@ -302,7 +317,8 @@ def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, p
     specs = {
         'transfer2.5.json': transfer25_spec(name, prompt),
         'cosmos3.json': cosmos3_spec(name, video_frames, fps, size),
-        'prompt.json': caption(count_objects(clip_dir, meta), video_frames, fps, size),
+        'prompt.json': caption(count_objects(clip_dir, meta, min_pixels, min_share), video_frames, fps, size,
+                               meta['camera'].get('fov', 90.0)),
         'manifest.json': {'source_frames': n, 'video_frames': video_frames, 'padding_frames': video_frames - n,
                           'padding': 'repeat_last', 'fps': fps, 'size': list(size)},
     }

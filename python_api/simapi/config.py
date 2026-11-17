@@ -8,12 +8,15 @@ Mit --stdin-control liest der laufende Prozess pro stdin-Zeile entweder
   der komplette Sollzustand, fehlende Flags bekommen ihren Default, oder
 - {"save_camera": "Name"}: aktuelle Spectator-Pose in cameras.json speichern
   (gleicher Name ueberschreibt), oder
-- {"goto_camera": "Name"}: Spectator an die gespeicherte Pose setzen.
+- {"goto_camera": "Name"}: Spectator an die gespeicherte Pose setzen (mit ihrem Sichtfeld), oder
+- {"set_fov": 60.0}: horizontales Sichtfeld der Kamera in Grad (10-130, Default 90 wie das
+  CARLA-Fenster); gehoert zur Kameraposition und wird mit ihr gespeichert.
 EOF auf stdin beendet den Prozess sauber (Actors weg, Sync-Modus aus); unter Windows
 ist das der einzige saubere Weg, ein Signal wuerde den Prozess hart beenden.
 
 Mit --status-file schreibt er etwa fuenfmal pro Sekunde die Objekte im Bild
-(Modell, Distanz, sichtbare Pixel, verdeckt) als JSON in diese Datei.
+(Modell, Distanz, sichtbare Pixel, verdeckt) und das Sichtfeld der Kamera als JSON in diese Datei,
+mit --preview-file im selben Takt das Kamerabild als kleines JPEG (Vorschau in Sim Control).
 """
 
 import argparse
@@ -23,7 +26,7 @@ RESOLUTIONS = {'fullhd': (1920, 1080), 'hd': (1280, 720),
                '1920x1080': (1920, 1080), '1280x720': (1280, 720)}
 
 # Wirken nur beim Start; im laufenden Betrieb werden Aenderungen ignoriert.
-START_ONLY = ('host', 'port', 'tm_port', 'stdin_control', 'status_file')
+START_ONLY = ('host', 'port', 'tm_port', 'stdin_control', 'status_file', 'preview_file')
 
 
 def at_least(lo, kind=int):
@@ -46,6 +49,8 @@ def build_parser():
     g.add_argument('--stdin-control', action='store_true', help='Live-Updates von stdin lesen (siehe oben)')
     g.add_argument('--status-file', metavar='PFAD',
                    help='Objekte im Bild laufend als JSON hierhin schreiben (misst dafuer immer die Verdeckung)')
+    g.add_argument('--preview-file', metavar='PFAD',
+                   help='mit --status-file: Kamerabild laufend als JPEG (640 px breit) hierhin schreiben')
 
     g = p.add_argument_group('Verkehr')
     g.add_argument('-n', '--number-of-vehicles', type=at_least(0), default=30)
@@ -63,7 +68,8 @@ def build_parser():
     g.add_argument('--export', action='store_true',
                    help='Clips mit fester Kamera aufnehmen und fertige Clips umwandeln (python -m simapi.convert): '
                         'Eingabe fuer Cosmos-Transfer2.5 und 3D-Labels fuer BEVHeight, HeightFormer und CoBEV. '
-                        'Beschriftet wird alles Sichtbare, --max-distance gilt nur fuer Anzeige und Statusdatei')
+                        'Beschriftet wird, was genug zu sehen ist (nicht verdeckt, im Bild; siehe simapi.convert '
+                        '--min-share), --max-distance gilt nur fuer Anzeige und Statusdatei')
     g.add_argument('--export-dir', default='_out')
     g.add_argument('--clip-frames', type=at_least(1), default=93,
                    help='Aufgenommene Frames pro Clip (Default 93); Cosmos-Export fuellt kurze Restclips auf')

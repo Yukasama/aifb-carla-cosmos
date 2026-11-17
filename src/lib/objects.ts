@@ -40,8 +40,10 @@ export function readFrameObjects(file: string): FrameObjects | null {
   }
   if (!data || typeof data !== "object" || !isNum(data.frame) || !isNum(data.written_at)) return null;
   const objects = Array.isArray(data.objects) ? data.objects.map(parseObject) : [];
+  const camera = data.camera as Record<string, unknown> | null | undefined;
   return {
     frame: data.frame,
+    fov: camera && typeof camera === "object" && isNum(camera.fov) ? camera.fov : null,
     ageMs: Math.max(0, Math.round(Date.now() - data.written_at * 1000)),
     objects: objects.filter((o): o is FrameObject => o !== null),
   };

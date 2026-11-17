@@ -16,12 +16,18 @@ from simapi import convert, cosmos, dair, dataset
 from simapi.camera import Rig
 from simapi.clips import Recorder
 from simapi.config import RESOLUTIONS, build_parser
-from simapi.geometry import intrinsics, matrix_rotation, ue_matrix, world_from_cv
+from simapi.geometry import intrinsics, matrix_rotation, project_box, ue_matrix, world_from_cv
 
 
 def write_json(path, value):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(value, f)
+
+
+def carla_depth(meters):
+    """Meter -> ein Pixel des CARLA-Tiefenbilds (BGR)."""
+    v = int(round(meters / 1000 * (256 ** 3 - 1)))
+    return (v >> 16) & 255, (v >> 8) & 255, v & 255
 
 
 def fixture(root, n=82):
@@ -75,6 +81,37 @@ class ExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             rs.distribute(20000, ['same', 'same'])
 
+    def test_holdout_gets_one_position_budget_on_top(self):
+        names = ['p%d' % i for i in range(8)]
+        plan = rs.with_holdout(rs.distribute(20000, names), 'Holdout')
+        self.assertEqual(list(plan), names + ['Holdout'])  # zuletzt aufgenommen
+        self.assertEqual(plan['Holdout'], [93] * 27)  # 2511 Frames wie jede Trainingsposition
+        self.assertEqual(sum(map(sum, plan.values())), 22599)
+        self.assertEqual(rs.with_holdout(rs.distribute(93, names), 'Holdout')['Holdout'], [93])
+        self.assertEqual(rs.with_holdout(rs.distribute(1000, names), 'Holdout')['Holdout'], [93] * 2)
+        with self.assertRaises(ValueError):
+            rs.with_holdout({'Holdout': [93]}, 'Holdout')
+
+    def test_holdout_positions_on_command_line(self):
+        saved = {name: {'map': 'Town10HD_Opt'} for name in ['p%d' % i for i in range(8)] + ['Holdout']}
+        with tempfile.TemporaryDirectory() as root, patch.object(rs.presets, 'load', return_value=saved), \
+                patch.object(rs, 'check_plan') as check:
+            self.assertEqual(rs.main(['--dry-run', '--export-dir', root]), 0)
+            plan, _, holdout = check.call_args.args
+            self.assertEqual(holdout, 'Holdout')
+            self.assertEqual({name: len(group) for name, group in plan.items()},
+                             {**{'p%d' % i: 27 for i in range(8)}, 'Holdout': 27})
+            self.assertEqual(rs.main(['--dry-run', '--export-dir', root, '--frames', '4000', '--positions', 'p1', 'p2']), 0)
+            self.assertEqual({name: len(group) for name, group in check.call_args.args[0].items()},
+                             {'p1': 22, 'p2': 22, 'Holdout': 22})
+            # --no-holdout nimmt sie nicht auf, ins Training kommt sie trotzdem nicht
+            self.assertEqual(rs.main(['--dry-run', '--export-dir', root, '--no-holdout']), 0)
+            self.assertEqual(list(check.call_args.args[0]), ['p%d' % i for i in range(8)])
+            with self.assertRaises(SystemExit), patch('sys.stderr'):
+                rs.main(['--dry-run', '--export-dir', root, '--positions', 'p1', 'Holdout'])
+            with self.assertRaisesRegex(SystemExit, 'Holdout-Position "Gibts nicht" fehlt'):
+                rs.main(['--dry-run', '--export-dir', root, '--holdout', 'Gibts nicht'])
+
     def test_running_carla_needs_use_running(self):
         running = object()
         with patch.object(rs, 'connect', return_value=running):
@@ -121,6 +158,16 @@ class ExportTests(unittest.TestCase):
                                                ('image_size_y', str(expected[1])), ('fov', '90.0')])
         self.assertEqual(len(actors), 6)
         self.assertEqual(build_parser().parse_args([]).quality, 'fullhd')
+        # Sichtfeld gilt ab dem Spawn: anderes Sichtfeld -> Sensoren neu
+        rig.update({'rgb'}, pose, RESOLUTIONS['hd'], 45.0)
+        self.assertEqual(attributes[-1], ('fov', '45.0'))
+        self.assertEqual((len(actors), rig.fov), (7, 45.0))
+        rig.update({'rgb'}, pose, RESOLUTIONS['hd'], 45.0)
+        self.assertEqual(len(actors), 7)
+        # Vorschau: kleiner, gleiches Seitenverhaeltnis und Sichtfeld
+        rig.update({'rgb', 'preview'}, pose, RESOLUTIONS['fullhd'], 45.0)
+        self.assertIn([('image_size_x', '640'), ('image_size_y', '360'), ('fov', '45.0')],
+                      [attributes[i:i + 3] for i in range(len(attributes) - 2)])
 
     def test_session_stops_at_budget(self):
         with tempfile.TemporaryDirectory() as root:
@@ -162,6 +209,40 @@ class ExportTests(unittest.TestCase):
                     return frame + 1
             with patch.object(rs, 'SETTLE_SECONDS', 0), self.assertRaisesRegex(RuntimeError, 'Kein vollstaendiger Clip'):
                 broken.record(BrokenSim(), 'a', 1, 0)
+
+    def test_holdout_clips_go_to_own_folder_and_are_marked(self):
+        with tempfile.TemporaryDirectory() as root:
+            added = []
+            conversions = NS(add=added.append, poll=lambda: None, pending=lambda: 0, failed=[])
+            cfg_off = NS(export=False, clip_frames=93, export_dir=root)
+            cfg_on = NS(export=True, clip_frames=93, export_dir=root)
+            session = rs.Session({'a': [93], 'Holdout': [93, 93]}, cfg_off, cfg_on, conversions, rs.Display(), 'Holdout')
+            session.show = lambda *args: None
+            class FakeSim:
+                recorder = NS(clip=None)
+                def apply(self, cfg):
+                    self.cfg = cfg
+                def goto_camera(self, name):
+                    pass
+                def advance(self, frame):
+                    if self.cfg.export:
+                        path = os.path.join(self.cfg.export_dir, 'clip%d' % frame)
+                        os.makedirs(path)
+                        write_json(os.path.join(path, 'clip.json'), {'frames': self.cfg.clip_frames})
+                        session.on_clip(path)
+                    return frame + 1
+            sim = FakeSim()
+            with patch.object(rs, 'view_problem', return_value=None), patch.object(rs, 'SETTLE_SECONDS', 0):
+                frame = session.record(sim, 'a', 1, 0)
+                session.record(sim, 'Holdout', 2, frame)
+            holdout_dir = os.path.join(root, rs.HOLDOUT_DIR)
+            self.assertEqual([os.path.dirname(c) for c in added], [root, holdout_dir, holdout_dir])
+            self.assertEqual(cfg_on.export_dir, root)  # Trainings-Einstellungen bleiben unveraendert
+            for clip in added:
+                with open(os.path.join(clip, 'clip.json'), encoding='utf-8') as f:
+                    self.assertEqual(json.load(f).get('holdout', False), clip.startswith(holdout_dir))
+            # Export-Ordner: nur die Trainingsclips direkt darin, holdout/ liegt eine Ebene tiefer
+            self.assertEqual(list(convert.find_clips([root])), added[:1])
 
     def test_matrix_rotation_composes_local_box_rotation(self):
         zero = dict.fromkeys('xyz', 0)
@@ -227,12 +308,53 @@ class ExportTests(unittest.TestCase):
             np.testing.assert_allclose(hd[:2, 2], (full[:2, 2] + 0.5) * 2 / 3 - 0.5, atol=1e-5)
             with open(os.path.join(root, 'dataset', ds[-1]['label_camera_std_path'])) as f:
                 self.assertAlmostEqual(json.load(f)[0]['2d_box']['xmax'], round(labels[0]['2d_box']['xmax'] * (2 / 3), 2))
+            rs.mark_holdout(clip)  # Holdout-Clips kommen in keinen Trainingsdatensatz
+            with self.assertRaisesRegex(ValueError, 'Holdout-Clip'):
+                dataset.build([clip], os.path.join(root, 'dataset-holdout'), val=0)
             with self.assertRaisesRegex(ValueError, 'Frames'):
                 dataset.frames_of(os.path.join(out, 'rgb.mp4'), {0}, 82, 30)
             with self.assertRaisesRegex(ValueError, 'fps'):
                 dataset.frames_of(os.path.join(out, 'rgb.mp4'), {0}, 93, 16)
             self.assertEqual(convert.main([clip, '--drop-frames']), 0)
             self.assertFalse(os.path.exists(os.path.join(clip, 'frames')))
+
+    def test_hidden_objects_get_no_label(self):
+        """Aufgezeichnet wird ab einem Pixel; ein Label (und einen Platz im Cosmos-Prompt) bekommt nur, was
+        genug zu sehen ist. Ein verdecktes Auto mit Actor gilt nicht als unbeschriftet."""
+        with tempfile.TemporaryDirectory() as root:
+            meta = fixture(root, n=2)
+            view = dair.View(meta['camera'])
+            hidden = {'id': 303, 'class': 'car',
+                      'bbox_3d': {'center': {'x': 30, 'y': 0, 'z': 0.75}, 'extent': {'x': 2, 'y': 1, 'z': 0.75},
+                                  'rotation': {'pitch': 0, 'yaw': 0, 'roll': 0}}}
+            proj = project_box(dair.world_vertices(hidden['bbox_3d']), view.w2c, view.K, view.w, view.h)
+            hull = np.zeros((view.h, view.w), np.uint8)
+            cv2.fillConvexPoly(hull, cv2.convexHull(np.round(proj[0].reshape(-1, 2) - 0.5).astype(np.int32)), 1)
+            for i in range(meta['frames']):
+                paths, label_path = dair.frame_paths(root, meta, i)
+                inst, depth = cv2.imread(paths['instance']), cv2.imread(paths['depth'])
+                tags = inst[..., 2]
+                # Mast in 5 m vor der Box (nur ueber Strasse, die anderen Objekte bleiben frei) ...
+                pole = hull.astype(bool) & (tags == 1)
+                inst[pole], depth[pole] = (0, 0, 6), carla_depth(5.0)
+                # ... bis auf zwei Pixel des Autos
+                ys, xs = np.nonzero(pole)
+                inst[ys[:2], xs[:2]] = (303 >> 8, 303 & 255, 14)
+                depth[ys[:2], xs[:2]] = carla_depth(28.0)
+                self.assertTrue(cv2.imwrite(paths['instance'], inst) and cv2.imwrite(paths['depth'], depth))
+                with open(label_path, encoding='utf-8') as f:
+                    objects = json.load(f)['objects']
+                write_json(label_path, {'objects': objects + [hidden]})
+
+            out = os.path.join(root, 'dair')
+            os.makedirs(out)
+            info = dair.build(root, meta, out)  # kein Fehler wegen unbeschrifteter Objekte
+            self.assertEqual((info['objects'], info['hidden'], info['unlabeled']), (6, {'0000': 1, '0001': 1}, {}))
+            with open(os.path.join(out, 'label', '0001.json')) as f:
+                self.assertEqual([lb['type'] for lb in json.load(f)], ['Car', 'Cyclist', 'Pedestrian'])
+            self.assertEqual(cosmos.count_objects(root, meta), {'vehicles': 1, 'two_wheelers': 1, 'pedestrians': 1})
+            # mit Schwelle 0 bekaeme es ein Label (zwei Pixel = 200 Pixel in Full HD)
+            self.assertEqual(cosmos.count_objects(root, meta, min_share=0.0)['vehicles'], 2)
 
     def test_missing_labels_fail(self):
         with tempfile.TemporaryDirectory() as root:

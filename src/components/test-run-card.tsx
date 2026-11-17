@@ -87,8 +87,9 @@ export function TestRunCard({ status, now, busy, error, onStart, onStop }: Props
       <div className="space-y-4 px-5 py-4">
         <p className="text-sm text-ink-300">
           Startet <code className="font-mono text-ink-100">record_scenes.py</code> mit {frames} Frames: ein Clip von der
-          ersten gespeicherten Kameraposition, aufgenommen und umgewandelt (Cosmos-Eingabe und Detektor-Labels) wie bei
-          einem großen Lauf. Benutzt das CARLA unter der Adresse oben oder startet eins ohne Fenster. Die Simulation wird
+          ersten gespeicherten Kameraposition und einer von der Holdout-Position (Testdaten, landet in{" "}
+          <code className="font-mono text-ink-100">holdout/</code>), aufgenommen und umgewandelt (Cosmos-Eingabe und
+          Detektor-Labels) wie bei einem großen Lauf. Benutzt das CARLA unter der Adresse oben oder startet eins ohne Fenster. Die Simulation wird
           dafür getrennt und verbindet sich danach wieder.
         </p>
 

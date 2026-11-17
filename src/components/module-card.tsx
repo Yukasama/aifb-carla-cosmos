@@ -3,12 +3,12 @@
 import { Fragment, useMemo } from "react";
 
 import { buildArgs, type Connection, type ModuleDef, type ParamDef, type ParamValue, type ParamValues } from "@/lib/modules";
-import type { CameraPreset, ModuleStatus } from "@/lib/types";
+import type { CameraPreset, FrameObjects, ModuleStatus } from "@/lib/types";
 
 import { CameraSection } from "./camera-section";
-import { formatDuration } from "./hooks";
+import { formatDuration, usePoll } from "./hooks";
 import { LogView } from "./log-view";
-import { ObjectsSection } from "./objects-section";
+import { OBJECTS_POLL_MS, ObjectsSection } from "./objects-section";
 import { ParamField } from "./param-field";
 
 /** Selbst beendet, ohne dass wir getrennt haben: Fehler oder CARLA weg */
@@ -33,6 +33,7 @@ type Props = {
   onReset: () => void;
   onKill: () => void;
   onCamera: (op: "save" | "goto", name: string) => Promise<boolean>;
+  onFov: (fov: number) => Promise<boolean>;
 };
 
 function StatusPill({ status, now, reachable }: { status: ModuleStatus | undefined; now: number; reachable: boolean }) {
@@ -85,11 +86,17 @@ export function ModuleCard({
   onReset,
   onKill,
   onCamera,
+  onFov,
 }: Props) {
   const state = status?.state ?? "idle";
   const running = state === "running";
   const connected = running && !!status?.ready;
   const groups = [...new Set(def.params.map((p) => p.group))];
+  // Statusdatei des Laufs: Objekte im Bild und aktuelles Sichtfeld; neuer Lauf -> erst leer statt der letzten Daten
+  const frame = usePoll<FrameObjects>(
+    def.objects && running ? `/api/modules/${def.id}/objects?run=${status?.runId ?? 0}` : null,
+    OBJECTS_POLL_MS,
+  ).data;
 
   // Validierung des Entwurfs (dieselbe Logik wie auf dem Server)
   const draftError = useMemo(() => {
@@ -165,14 +172,22 @@ export function ModuleCard({
             {def.cameras?.after === g && (
               <section className="space-y-3 border-t border-ink-800 pt-4">
                 <h3 className="font-mono text-[11px] uppercase tracking-wider text-ink-500">Kamera</h3>
-                <CameraSection presets={cameras} running={connected} busy={busy} onCamera={onCamera} />
+                <CameraSection
+                  presets={cameras}
+                  running={connected}
+                  busy={busy}
+                  fov={frame?.fov ?? null}
+                  previewUrl={def.objects && connected ? `/api/modules/${def.id}/preview?run=${status?.runId ?? 0}` : null}
+                  now={now}
+                  onCamera={onCamera}
+                  onFov={onFov}
+                />
               </section>
             )}
             {def.objects?.after === g && (
               <section className="space-y-3 border-t border-ink-800 pt-4">
                 <h3 className="font-mono text-[11px] uppercase tracking-wider text-ink-500">Im Bild</h3>
-                {/* neuer Lauf -> leere Liste statt der letzten des vorherigen */}
-                <ObjectsSection key={status?.runId ?? 0} id={def.id} running={running} />
+                <ObjectsSection running={running} data={frame} />
               </section>
             )}
           </Fragment>

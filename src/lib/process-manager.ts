@@ -17,6 +17,7 @@ import {
   type ModuleId,
   type ParamValues,
 } from "./modules";
+import { validateFov } from "./lens";
 import type { LogChunk, ModuleStatus, TestRunStatus } from "./types";
 
 // uv-Projekt mit den Python-Packages
@@ -37,6 +38,11 @@ const STATUS_DIR = path.join(RUNTIME_DIR, "status");
 /** Hierhin schreibt ein Modul mit `objects` laufend die Objekte im Bild (siehe objects.ts) */
 export function statusFile(id: ModuleId) {
   return path.join(STATUS_DIR, `${id}.json`);
+}
+
+/** Kamerabild (JPEG) im selben Takt wie die Statusdatei */
+export function previewFile(id: ModuleId) {
+  return path.join(STATUS_DIR, `${id}.jpg`);
 }
 
 const MAX_LOG_CHUNK = 256 * 1024;
@@ -172,7 +178,8 @@ class ProcessManager {
       // Datei vom letzten Lauf weg, sonst zeigt die UI bis zum ersten Frame alte Objekte
       fs.mkdirSync(STATUS_DIR, { recursive: true });
       fs.rmSync(statusFile(id), { force: true });
-      argv.push("--status-file", statusFile(id));
+      fs.rmSync(previewFile(id), { force: true });
+      argv.push("--status-file", statusFile(id), "--preview-file", previewFile(id));
     }
     const runId = this.nextRunId++;
 
@@ -251,6 +258,16 @@ class ProcessManager {
     }
     const name = validateCameraName(rawName);
     e.child.stdin.write(JSON.stringify({ [`${op}_camera`]: name }) + "\n");
+    return this.status(id);
+  }
+
+  /** Sichtfeld der Kamera (Grad) im laufenden Prozess; gespeichert wird es mit der nächsten Position. */
+  fov(id: ModuleId, rawFov: unknown): ModuleStatus {
+    const e = this.entries[id];
+    if (e.state !== "running" || !e.child?.stdin) {
+      throw new ConflictError(`„${MODULES[id].title}“ ist nicht verbunden.`);
+    }
+    e.child.stdin.write(JSON.stringify({ set_fov: validateFov(rawFov) }) + "\n");
     return this.status(id);
   }
 
@@ -404,7 +421,7 @@ export function probeTcp(
 
 // ---------- Testlauf von record_scenes.py ----------
 
-/** So viele Frames nimmt der Testlauf auf: ein Clip von der ersten Kameraposition */
+/** --frames des Testlaufs: ein Clip von der ersten Kameraposition; record_scenes.py nimmt dazu einen von der Holdout-Position auf */
 export const TEST_FRAMES = 93;
 const TEST_SCRIPT = "record_scenes.py";
 const TEST_LOG = path.join(LOG_DIR, "test-run.log");

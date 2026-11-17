@@ -138,6 +138,12 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('depth', request)
         depth = run_cosmos.sim_transfer_request(clip / 'cosmos/cosmos3.json', {}, 'depth')
         self.assertEqual(depth['depth'], {'control_path': str(clip / 'cosmos/depth.mp4')})
+        # Holdout-Clips von record_scenes.py: eine Ebene tiefer ignoriert, direkt im Clip-Ordner abgelehnt
+        holdout = self.root / 'clips' / 'holdout' / 'test-clip'
+        js(holdout / 'clip.json', {'frames': 82, 'fps': 30, 'holdout': True})
+        self.assertEqual(run_cosmos.collect_specs(clip.parent, '3'), [str(clip / 'cosmos/cosmos3.json')])
+        with self.assertRaisesRegex(ValueError, 'Holdout-Clip'):
+            run_cosmos.collect_specs(holdout.parent, '3')
         spec['num_frames'] = 82
         js(clip / 'cosmos/cosmos3.json', spec)
         with self.assertRaisesRegex(ValueError, 'Kontrollvideos'):

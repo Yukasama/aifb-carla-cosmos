@@ -17,6 +17,9 @@ immer zusammen im Training oder in der Validierung.
   <out>/data_info.json
   <out>/single-infrastructure-split-data.json       train/val, nach Kameraposition getrennt
 
+Holdout-Clips von record_scenes.py (<export-dir>/holdout/, "holdout": true in clip.json) sind
+Testdaten: Ein Export-Ordner findet sie nicht (nur eine Ebene tief), direkt angegeben brechen sie ab.
+
 Kalibrierung und 2D-Boxen sind auf die Bildgroesse umgerechnet. Weiter wie bei DAIR-V2X-I: <out> als
 data/dair-v2x-i ins Repo des Detektors legen, die Split-Datei nach data/ kopieren, dann
 scripts/data_converter/dair2kitti.py und scripts/gen_info_dair.py. Die Experimente setzen
@@ -126,6 +129,9 @@ def build(clips, out, cosmos_dirs=(), val=0.2, seed=0, quality=95, size=HD):
             sources.append((os.path.join(clip, 'cosmos', 'rgb.mp4'), 'carla'))
         with open(os.path.join(clip, 'clip.json'), encoding='utf-8') as f:
             meta = json.load(f)
+        if meta.get('holdout'):
+            raise ValueError('%s ist ein Holdout-Clip (Testdaten aus record_scenes.py) und gehoert in keinen '
+                             'Trainingsdatensatz' % clip)
         with open(meta_path, encoding='utf-8') as f:
             labeled = json.load(f)['frames']
         cam = meta['camera']

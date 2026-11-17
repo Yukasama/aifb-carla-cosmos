@@ -3,6 +3,7 @@ import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 
+import { DEFAULT_FOV, FOV_RANGE } from "./lens";
 import { SCRIPTS_DIR } from "./process-manager";
 import type { CameraPreset } from "./types";
 
@@ -25,7 +26,9 @@ export function readCameraPresets(): CameraPreset[] {
     const p = raw as Record<string, unknown> | null;
     if (!p || typeof p !== "object" || typeof p.map !== "string") continue;
     if (!NUMBERS.every((k) => typeof p[k] === "number")) continue;
-    out.push({ name, map: p.map });
+    const fov = p.fov ?? DEFAULT_FOV;
+    if (typeof fov !== "number" || fov < FOV_RANGE[0] || fov > FOV_RANGE[1]) continue; // wie Python: ungültig
+    out.push({ name, map: p.map, fov });
   }
   return out.sort((a, b) => a.map.localeCompare(b.map) || a.name.localeCompare(b.name, "de"));
 }

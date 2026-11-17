@@ -73,6 +73,86 @@ def test_update_is_full_state():
         raise AssertionError(bad)
 
 
+def test_walkers_start_after_tick():
+    """controller.start() erst, wenn der Fussgaenger im Snapshot steht; sonst traegt CARLA ihn bei (0, 0, 0) ein."""
+    from types import SimpleNamespace as NS
+
+    from simapi.traffic import Traffic
+
+    started, known = [], set()
+
+    class Controller:
+        def __init__(self, i):
+            self.id = i
+
+        def start(self):
+            started.append(self.id)
+
+        def go_to_location(self, loc):
+            pass
+
+        def set_max_speed(self, v):
+            pass
+
+    world = NS(get_snapshot=lambda: NS(find=lambda i: object() if i in known else None),
+               get_actors=lambda ids: [Controller(i) for i in ids],
+               get_random_location_from_navigation=lambda: None)
+    t = Traffic.__new__(Traffic)
+    t.world, t.to_start = world, [(21, 11, 1.4), (22, 12, 1.4)]
+    t.after_tick()  # gerade gespawnt, noch kein Tick: niemand startet
+    assert started == [] and len(t.to_start) == 2
+    known.add(11)
+    t.after_tick()
+    assert started == [21] and t.to_start == [(22, 12, 1.4)]
+    known.add(12)
+    t.after_tick()
+    t.after_tick()
+    assert started == [21, 22] and t.to_start == []
+
+
+def test_refill_replaces_deleted_walkers():
+    """CARLA loescht angefahrene Fussgaenger; refill ersetzt sie, gerade gespawnte zaehlen nicht als geloescht."""
+    from types import SimpleNamespace as NS
+
+    from simapi.traffic import Traffic
+
+    alive, spawned, destroyed = {11, 13}, [], []
+    t = Traffic.__new__(Traffic)
+    t.world = NS(get_snapshot=lambda: NS(find=lambda i: object() if i in alive else None))
+    t.walkers, t.walker_target = [(11, 21), (12, 22), (13, 23), (14, 24)], 4
+    t.to_start = [(24, 14, 1.0)]  # 14 gerade gespawnt, noch nicht im Snapshot
+    t._destroy = lambda ids, quiet=False: destroyed.append((ids, quiet))
+    t._spawn_walkers = lambda k, where=None: spawned.append((k, where))
+    where = object()
+    assert t.refill(where) == 1
+    assert t.walkers == [(11, 21), (13, 23), (14, 24)] and spawned == [(1, where)] and destroyed == [([22], True)]
+    alive.update({12, 14})
+    assert t.refill() == 0 and spawned == [(1, where)]
+
+
+def test_detect_counts_pixels_outside_box():
+    """Ein Arm am Bildrand zaehlt auch, wenn die Box knapp ausserhalb liegt (sonst fehlt ein Label)."""
+    import carla
+    from types import SimpleNamespace as NS
+
+    from simapi import boxes
+    from simapi.geometry import object_pixels
+
+    tags = np.array([[12, 12, 1], [14, 1, 1]])
+    ids = np.array([[0x0105, 0x0105, 0x0105], [7, 0, 0]])
+    assert object_pixels(tags, ids) == {0x0105: 2, 7: 1}  # Strasse mit derselben ID zaehlt nicht
+
+    cam = make_camera()
+    cam.seen = {0x0105: 2}
+    behind = carla.Transform(carla.Location(-20, 0, 0))  # Box hinter der Kamera, nicht im Bild
+    actors = [NS(id=0x10105, type_id='walker.pedestrian.0001', attributes={}, bounding_box=car_box()),
+              NS(id=8, type_id='vehicle.test', attributes={'base_type': 'car'}, bounding_box=car_box())]
+    snap = NS(find=lambda i: NS(get_transform=lambda: behind))
+    cfg = NS(min_visible_pixels=50, hide_occluded=False)
+    (d,) = boxes.detect(actors, snap, cfg, cam, 0)  # 8: nicht im Bild und kein Pixel
+    assert d['actor'].id == 0x10105 and d['box2d'] is None and d['visible_pixels'] == 2 and d['occluded']
+
+
 def test_status_file():
     from types import SimpleNamespace as NS
 
@@ -87,11 +167,11 @@ def test_status_file():
             det(3, 5.0, {'color': 'kaputt'}, visible_pixels=900, occluded=False)]
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, 'status.json')
-        write_status(path, NS(frame=42), dets)
+        write_status(path, NS(frame=42), dets, {'fov': 60.0})
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
         assert not os.path.exists(path + '.tmp')
-    assert data['frame'] == 42 and isinstance(data['written_at'], float)
+    assert data['frame'] == 42 and isinstance(data['written_at'], float) and data['camera'] == {'fov': 60.0}
     objs = data['objects']
     assert [o['id'] for o in objs] == [3, 1, 2]  # nach Distanz
     assert objs[2] == {'id': 2, 'class': 'car', 'blueprint_id': 'vehicle.tesla.model3', 'color': [255, 0, 0],
@@ -363,7 +443,7 @@ def test_dair_labels():
     fr = dair.Frame(meta, *dair.fit_ground(meta, depth, tags))
     s = dair.SIZE[0] / CW
 
-    lb = fr.label(car_record(0), ids, depth)
+    lb = fr.label(car_record(0), dair.Pixels(ids, tags), depth)
     ys, xs = np.nonzero(ids == 300)
     assert lb['type'] == 'Car' and lb['truncated_state'] == 0 and lb['occluded_state'] == 0
     assert lb['2d_box'] == {'xmin': round(xs.min() * s, 2), 'ymin': round(ys.min() * s, 2),
@@ -374,17 +454,41 @@ def test_dair_labels():
     # Mast vor der rechten Haelfte: teilweise verdeckt, 2D-Box nur um den sichtbaren Teil
     x0, x1 = xs.min(), xs.max() + 1
     mid = (x0 + x1) // 2
-    depth2, _, ids2 = scene(cam, [car], stripe=(mid, x1))
-    lb2 = fr.label(car_record(0), ids2, depth2)
+    depth2, tags2, ids2 = scene(cam, [car], stripe=(mid, x1))
+    lb2 = fr.label(car_record(0), dair.Pixels(ids2, tags2), depth2)
     assert lb2['occluded_state'] >= 1 and lb2['2d_box']['xmax'] <= mid * s
-    depth4, _, ids4 = scene(cam, [car], stripe=(x0, x1))
-    assert fr.label(car_record(0), ids4, depth4) is None  # komplett verdeckt: kein Label
+    depth4, tags4, ids4 = scene(cam, [car], stripe=(x0, x1))
+    assert fr.label(car_record(0), dair.Pixels(ids4, tags4), depth4) is None  # komplett verdeckt: kein Label
+    # bis auf einen schmalen Streifen verdeckt: aufgezeichnet, aber zu wenig sichtbar fuer ein Label
+    depth5, tags5, ids5 = scene(cam, [car], stripe=(x0 + 1, x1))
+    px5 = dair.Pixels(ids5, tags5)
+    vis, _ = fr.view.visibility(car_record(0), px5, depth5)
+    assert 0 < vis['pixels'] and vis['in_frame'] > 0.999 and vis['share'] < dair.MIN_SHARE
+    assert fr.label(car_record(0), px5, depth5) is None
+    assert fr.label(car_record(0), px5, depth5, min_share=0.0) is not None  # Schwelle einstellbar
 
-    # links aus dem Bild ragend
-    edge = (300, 14, car_at(0, y=-24, yaw=0), car_box())
-    depth3, _, ids3 = scene(cam, [edge])
-    lb3 = fr.label(car_record(0, y=-24, yaw=0), ids3, depth3)
-    assert lb3['truncated_state'] == 1 and lb3['2d_box']['xmin'] == 0
+    # links aus dem Bild ragend: gut die Haelfte im Bild bekommt ein Label, ein Rest am Rand nicht
+    edge = (300, 14, car_at(0, y=-23, yaw=0), car_box())
+    depth3, tags3, ids3 = scene(cam, [edge])
+    lb3 = fr.label(car_record(0, y=-23, yaw=0), dair.Pixels(ids3, tags3), depth3)
+    assert lb3['truncated_state'] == 1 and lb3['2d_box']['xmin'] == 0 and lb3['occluded_state'] == 0
+    depth6, tags6, ids6 = scene(cam, [(300, 14, car_at(0, y=-25.5, yaw=0), car_box())])
+    px6 = dair.Pixels(ids6, tags6)
+    vis6, _ = fr.view.visibility(car_record(0, y=-25.5, yaw=0), px6, depth6)
+    assert vis6['pixels'] > 0 and vis6['unoccluded'] == 1.0 and vis6['in_frame'] < dair.MIN_SHARE
+    assert fr.label(car_record(0, y=-25.5, yaw=0), px6, depth6) is None
+
+    # 16-Bit-ID eines Kartenobjekts (Strasse) gleich der des Autos: zaehlt nicht als Auto
+    ids7 = np.where(tags == 1, 300, ids)
+    px7 = dair.Pixels(ids7, tags)
+    vis7, (ys7, xs7) = fr.view.visibility(car_record(0), px7, depth)
+    assert vis7['pixels'] == np.count_nonzero(ids == 300) and (tags[ys7, xs7] == 14).all()
+    assert fr.label(car_record(0), px7, depth)['2d_box'] == lb['2d_box']
+
+    # Pixelschwelle gilt fuer 1920 x 1080: ein Pixel dieser Aufnahme (192 x 108) zaehlt wie 100
+    assert fr.view.labeled({'pixels': 1, 'share': 1.0}, min_pixels=100)
+    assert not fr.view.labeled({'pixels': 1, 'share': 1.0}, min_pixels=101)
+    assert not fr.view.labeled({'pixels': 0, 'share': 1.0}, min_pixels=0)
 
     # Punktwolke: Strasse auf z = 0, Auto (hier eine flache Attrappe) darueber
     pts = fr.points(depth, tags)
@@ -629,6 +733,44 @@ def test_presets_roundtrip():
             pass
         else:
             raise AssertionError('kaputte Datei ueberschrieben')
+
+
+
+def test_presets_fov():
+    from types import SimpleNamespace as NS
+
+    from simapi.camera import focal_length, preset_fov, to_preset
+
+    pose = {'map': 'Town10HD_Opt', 'x': 1.5, 'y': -2, 'z': 8, 'pitch': -20, 'yaw': 90, 'roll': 0}
+    assert presets.valid(pose) and preset_fov(pose) == 90  # alte Eintraege ohne Sichtfeld
+    assert presets.valid(dict(pose, fov=45.5)) and preset_fov(dict(pose, fov=45.5)) == 45.5
+    for bad in (5, 170, True, '60', None):
+        assert not presets.valid(dict(pose, fov=bad)), bad
+    t = NS(location=NS(x=1.23456, y=0, z=8), rotation=NS(pitch=-20, yaw=90, roll=0))
+    assert to_preset('Town10HD_Opt', t, 73.739795)['fov'] == 73.74
+    assert to_preset('Town10HD_Opt', t)['fov'] == 90
+    assert abs(focal_length(90) - 18) < 1e-9 and abs(focal_length(2 * np.degrees(np.arctan(18 / 50))) - 50) < 1e-9
+
+
+def test_stdin_commands():
+    try:
+        from simapi.app import _command
+    except ImportError:  # carla-Wheel fehlt (macOS)
+        return
+    assert _command({'set_fov': 60}) == ('set_fov', 60)
+    assert _command({'goto_camera': 'Nord'}) == ('goto_camera', 'Nord')
+    for bad in ({'set_fov': '60'}, {'set_fov': True}, {'goto_camera': 3}, {'set_fov': 60, 'x': 1}, {'quit': 1}, []):
+        assert _command(bad) is None, bad
+
+
+def test_caption_lens():
+    from simapi.cosmos import caption, lens
+
+    assert [lens(f) for f in (90, 54, 40, 29, 20)] == ['Wide-angle lens', 'Wide-angle lens', 'Standard lens',
+                                                       'Standard lens', 'Telephoto lens']
+    counts = {'vehicles': 1, 'two_wheelers': 0, 'pedestrians': 0}
+    assert caption(counts, 93, 16, (1280, 720))['cinematography']['lens_focal_length'] == 'Wide-angle lens'
+    assert caption(counts, 93, 16, (1280, 720), 20)['cinematography']['lens_focal_length'] == 'Telephoto lens'
 
 
 if __name__ == '__main__':

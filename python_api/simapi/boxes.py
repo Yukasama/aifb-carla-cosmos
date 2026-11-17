@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from .geometry import intrinsics, project_box, visible_pixels, ue_matrix, matrix_rotation
+from .geometry import intrinsics, project_box, ue_matrix, matrix_rotation
 
 # Farbe pro Typ (Blueprint-Attribut 'base_type'; Fussgaenger -> 'pedestrian').
 # Gedeckte Toene: CARLA rendert Debug-Linien selbstleuchtend, sie wirken heller als ihr RGB-Wert.
@@ -41,13 +41,13 @@ def predicted_transform(actor_snap, dt):
 
 
 class Camera:
-    """Projektion der Kamera; ids = Actor-ID pro Pixel (Instanz-Segmentierung) oder None."""
+    """Projektion der Kamera; seen = 16-Bit-Actor-ID -> sichtbare Pixel (geometry.object_pixels) oder None."""
 
-    def __init__(self, transform, w, h, fov, ids=None):
+    def __init__(self, transform, w, h, fov, seen=None):
         self.transform, self.w, self.h, self.fov = transform, w, h, fov
         self.K = intrinsics(w, h, fov)
         self.w2c = np.array(transform.get_inverse_matrix())
-        self.ids = ids
+        self.seen = seen
 
 
 def detect(actors, snap, cfg, cam, max_distance):
@@ -55,7 +55,8 @@ def detect(actors, snap, cfg, cam, max_distance):
 
     Mit Instanzbild zusaetzlich 'visible_pixels' und 'occluded' (weniger als
     min_visible_pixels sichtbar). 'boxed': bekommt eine Box (nicht verdeckt
-    oder hide_occluded aus).
+    oder hide_occluded aus). Im Bild ist, wessen Box ins Bild ragt oder wer
+    sichtbare Pixel hat (dann ggf. box2d None: nur ein Arm ragt ueber den Rand).
     """
     origin = cam.transform.location
     dets = []
@@ -69,13 +70,14 @@ def detect(actors, snap, cfg, cam, max_distance):
             continue
         verts = np.array([[v.x, v.y, v.z] for v in actor.bounding_box.get_world_vertices(t)])
         proj = project_box(verts, cam.w2c, cam.K, cam.w, cam.h)
-        if proj is None:
+        seen = cam.seen.get(actor.id & 0xFFFF, 0) if cam.seen is not None else None
+        if proj is None and not seen:
             continue
         det = {'actor': actor, 'snap': s, 'transform': t, 'distance': dist,
-               'class': actor_class(actor), 'box2d': proj[1], 'boxed': True}
-        if cam.ids is not None:
-            det['visible_pixels'] = visible_pixels(cam.ids, actor.id, det['box2d'])
-            det['occluded'] = det['visible_pixels'] < cfg.min_visible_pixels
+               'class': actor_class(actor), 'box2d': proj[1] if proj else None, 'boxed': True}
+        if seen is not None:
+            det['visible_pixels'] = seen
+            det['occluded'] = seen < cfg.min_visible_pixels
             det['boxed'] = not (cfg.hide_occluded and det['occluded'])
         dets.append(det)
     return dets
@@ -128,11 +130,15 @@ def _color(actor):
     return rgb if len(rgb) == 3 else None
 
 
-def write_status(path, snap, dets):
-    """Objekte im Bild fuer Sim Control, nach Distanz sortiert. Atomar: Leser sehen nie eine halbe Datei."""
+def write_status(path, snap, dets, camera=None):
+    """Objekte im Bild (nach Distanz sortiert) und Kamera (z.B. {'fov': 90.0}) fuer Sim Control.
+
+    Atomar: Leser sehen nie eine halbe Datei.
+    """
     data = {
         'frame': snap.frame,
         'written_at': time.time(),
+        'camera': camera,
         'objects': [{
             'id': d['actor'].id,
             'class': d['class'],

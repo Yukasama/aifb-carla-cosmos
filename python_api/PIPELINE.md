@@ -44,7 +44,7 @@ uv run run_cosmos.py 3 --check-only
 uv run run_cosmos.py 3
 ```
 
-Das Skript liest alle fertigen Clips aus `paths.clips`. Alle fünf Kontrollvideos und das Padding-Manifest müssen vorhanden sein, die Videos in 1920 × 1080 (Default von `simapi.convert`). Alte Clips, etwa in 1280 × 720, zuvor mit `python -m simapi.convert <clips> --force --every 1` neu umwandeln; dafür sind Rohbilder nötig.
+Das Skript liest alle fertigen Clips direkt in `paths.clips`; die Holdout-Testdaten von `record_scenes.py` im Unterordner `holdout/` bleiben außen vor, und ein Clip mit `"holdout": true` in `clip.json` bricht ab. Alle fünf Kontrollvideos und das Padding-Manifest müssen vorhanden sein, die Videos in 1920 × 1080 (Default von `simapi.convert`). Alte Clips, etwa in 1280 × 720, zuvor mit `python -m simapi.convert <clips> --force --every 1` neu umwandeln; dafür sind Rohbilder nötig.
 
 Transfer 2.5 nimmt `transfer2.5.json` des Clips; mehrere GPU-Einträge starten `torch.distributed.run`. Das Ergebnis hat die Größe der Eingabe (1920 × 1080). Guardrails bleiben an und müssen dann in `models` liegen; `disable_guardrails = true` schaltet sie ab.
 
@@ -90,7 +90,7 @@ Fehlt die gewählte Variante unter `paths.datasets`, baut der erste Trainingslau
   prepared.json         verwendete Pfade, Variante und Split-Zahlen
 ```
 
-`carla` verwendet die CARLA-RGB-Videos (`cosmos/rgb.mp4`, 1920 × 1080; kleinere Exporte werden abgelehnt), `cosmos` die Ergebnisse der ausgewählten Cosmos-Version. Bilder, Kalibrierung und 2D-Boxen werden auf die Trainingsgröße skaliert. Bilder derselben Kameraposition bleiben im selben Split. Padding wird nicht zum Trainingsbild. Eine nichtleere synthetische Validierung ist Pflicht; bei nur einem Clip kann kein getrennter Split entstehen und der Aufbau schlägt fehl. Ein abgebrochener Aufbau (Ordner ohne `prepared.json`) wird nicht wiederverwendet: prüfen, löschen, neu starten. Für ein verlässliches Experiment alle Varianten mit denselben Quellclips, demselben Seed und unveränderten Kamerapositionen erstellen.
+`carla` verwendet die CARLA-RGB-Videos (`cosmos/rgb.mp4`, 1920 × 1080; kleinere Exporte werden abgelehnt), `cosmos` die Ergebnisse der ausgewählten Cosmos-Version. Bilder, Kalibrierung und 2D-Boxen werden auf die Trainingsgröße skaliert. Bilder derselben Kameraposition bleiben im selben Split. Holdout-Clips (`paths.clips/holdout/`) kommen in keine Variante; ein Clip mit `"holdout": true` direkt in `paths.clips` bricht den Aufbau ab. Padding wird nicht zum Trainingsbild. Eine nichtleere synthetische Validierung ist Pflicht; bei nur einem Clip kann kein getrennter Split entstehen und der Aufbau schlägt fehl. Ein abgebrochener Aufbau (Ordner ohne `prepared.json`) wird nicht wiederverwendet: prüfen, löschen, neu starten. Für ein verlässliches Experiment alle Varianten mit denselben Quellclips, demselben Seed und unveränderten Kamerapositionen erstellen.
 
 `scripts/gen_info_dair.py` und die DAIR/KITTI-Konverter des Detektors laufen unverändert; ihre fest eingetragene Split-Datei `data/single-infrastructure-split-data.json` bekommen sie in einem eigenen Arbeitsordner mit genau dem angeforderten Split. Pickles entstehen in der Detektor-Umgebung, damit keine NumPy-2-Pickles in NumPy 1.19 landen.
 

@@ -138,6 +138,8 @@ def synthetic_sources(config, data, cosmos, size):
         results = directory(config.path_value(section, 'output') / 'results', 'Cosmos-Ergebnisse', nonempty=True)
         cosmos_dirs = [str(results)]
     for clip in clips:
+        if read_json(file(Path(clip) / 'clip.json')).get('holdout'):
+            raise ValueError(f'{clip}: Holdout-Clip (Testdaten aus record_scenes.py), gehoert nicht ins Training')
         meta = read_json(file(Path(clip) / 'dair/meta.json', 'DAIR-Cliplabels'))
         file(Path(clip) / 'dair/calib/camera_intrinsic.json')
         file(Path(clip) / 'dair/calib/virtuallidar_to_camera.json')
