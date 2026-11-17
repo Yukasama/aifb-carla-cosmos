@@ -68,8 +68,9 @@ def build_parser():
     g.add_argument('--export', action='store_true',
                    help='Clips mit fester Kamera aufnehmen und fertige Clips umwandeln (python -m simapi.convert): '
                         'Eingabe fuer Cosmos-Transfer2.5 und 3D-Labels fuer BEVHeight, HeightFormer und CoBEV. '
-                        'Beschriftet wird, was genug zu sehen ist (nicht verdeckt, im Bild; siehe simapi.convert '
-                        '--min-share), --max-distance gilt nur fuer Anzeige und Statusdatei')
+                        'Beschriftet wird bis 150 m, was genug zu sehen ist (nicht verdeckt, im Bild; siehe '
+                        'simapi.convert --max-distance, --min-share), --max-distance hier gilt nur fuer Anzeige '
+                        'und Statusdatei')
     g.add_argument('--export-dir', default='_out')
     g.add_argument('--clip-frames', type=at_least(1), default=93,
                    help='Aufgenommene Frames pro Clip (Default 93); Cosmos-Export fuellt kurze Restclips auf')

@@ -70,14 +70,16 @@ def convert(clip, args):
     if not todo:
         log.info('%s: schon umgewandelt (--force baut neu)', clip)
 
+    limits = dair.Limits(args.min_pixels, args.min_share, args.max_distance)
+
     def videos(out):
         n = cosmos.build(clip, meta, out, args.size, args.edge_preset, args.blur_preset, args.crf, args.prompt,
-                         args.min_pixels, args.min_share)
+                         limits)
         log.info('%s: Cosmos-Eingabe, %d Frames, %dx%d, %d Segmente', clip, meta['frames'], *args.size, n)
 
     def labels(out):
-        info = dair.build(clip, meta, out, args.every, args.allow_unlabeled, args.min_pixels, args.min_share)
-        log.info('%s: DAIR-Labels fuer %d Frames, %d Objekte (%d zu wenig sichtbar, ohne Label), '
+        info = dair.build(clip, meta, out, args.every, args.allow_unlabeled, limits)
+        log.info('%s: DAIR-Labels fuer %d Frames, %d Objekte (%d ohne Label: zu weit weg oder zu wenig sichtbar), '
                  'Kamera %.1f m ueber der Fahrbahn', clip, len(info['frames']), info['objects'],
                  sum(info['hidden'].values()), info['camera_height'])
         if info['unlabeled']:
@@ -148,6 +150,8 @@ def main(argv=None):
                         'gilt auch fuer die Objektzahlen im Cosmos-Prompt')
     g.add_argument('--min-share', type=_share, default=dair.MIN_SHARE, metavar='0-1',
                    help='Label erst ab diesem sichtbaren Anteil der Box: im Bild und nicht verdeckt (Default %(default)g)')
+    g.add_argument('--max-distance', type=_nonnegative(float), default=dair.MAX_DISTANCE, metavar='M',
+                   help='Label nur bis zu dieser Entfernung Kamera-Boxmitte in m, 0 = unbegrenzt (Default %(default)g)')
     args = p.parse_args(argv)
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
 

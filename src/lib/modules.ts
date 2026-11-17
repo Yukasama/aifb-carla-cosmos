@@ -87,7 +87,7 @@ export const MODULES: Record<ModuleId, ModuleDef> = {
       { group: TRAFFIC, key: "vehicles", label: "Fahrzeuge", type: "int", flag: "--number-of-vehicles", default: 30, min: 0, max: 200 },
       { group: TRAFFIC, key: "walkers", label: "Fußgänger", type: "int", flag: "--number-of-walkers", default: 10, min: 0, max: 300 },
 
-      { group: BOXES, key: "maxDistance", label: "Max. Distanz", type: "float", flag: "--max-distance", default: 50, min: 0, max: 200, step: 5, unit: "m", help: "0 = unbegrenzt. Nur für Anzeige und Liste; Aufnahmen beschriften alles Sichtbare." },
+      { group: BOXES, key: "maxDistance", label: "Max. Distanz", type: "float", flag: "--max-distance", default: 50, min: 0, max: 200, step: 5, unit: "m", help: "0 = unbegrenzt. Nur für Anzeige und Liste; Aufnahmen beschriften alles Sichtbare bis 150 m." },
       { group: BOXES, key: "minVisiblePixels", label: "Min. sichtbare Pixel", type: "int", flag: "--min-visible-pixels", default: 50, min: 1, max: 2000, help: "Darunter gilt ein Objekt als verdeckt." },
       { group: BOXES, key: "hideOccluded", label: "Verdeckte ausblenden", type: "bool", flag: "--hide-occluded", default: false, help: "Verdeckte Objekte bekommen keine Box." },
 

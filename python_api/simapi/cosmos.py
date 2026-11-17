@@ -184,13 +184,14 @@ def _aspect(size):
     return '%d,%d' % (size[0] // g, size[1] // g)
 
 
-def count_objects(clip_dir, meta, min_pixels=dair.MIN_PIXELS, min_share=dair.MIN_SHARE):
+def count_objects(clip_dir, meta, limits=dair.LIMITS):
     """Hoechste Zahl gleichzeitig beschrifteter Fahrzeuge, Zweiraeder und Personen im Clip.
 
-    Gezaehlt wird, was ein Label bekommt (simapi.dair: genug sichtbar), nicht jedes Objekt mit einem Pixel.
+    Gezaehlt wird, was ein Label bekommt (simapi.dair: nah genug und genug sichtbar), nicht jedes Objekt
+    mit einem Pixel.
     """
     def frame_classes(i):
-        return [o['class'] for o in dair.visible_objects(clip_dir, meta, i, min_pixels, min_share)]
+        return [o['class'] for o in dair.visible_objects(clip_dir, meta, i, limits)]
 
     most = {'vehicles': 0, 'two_wheelers': 0, 'pedestrians': 0}
     with ThreadPoolExecutor(WORKERS) as pool:
@@ -272,8 +273,7 @@ def caption(counts, frames, fps, size, fov=90.0):
     }
 
 
-def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, prompt=PROMPT,
-          min_pixels=dair.MIN_PIXELS, min_share=dair.MIN_SHARE):
+def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, prompt=PROMPT, limits=dair.LIMITS):
     """<clip>/cosmos/-Inhalt nach out schreiben (Ordner existiert und ist leer)."""
     n, fps = meta['frames'], meta['fps']
     # Beide Tokenizer komprimieren zeitlich. Kurze Restclips bis mindestens 93 bzw. 4k+1
@@ -317,7 +317,7 @@ def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, p
     specs = {
         'transfer2.5.json': transfer25_spec(name, prompt),
         'cosmos3.json': cosmos3_spec(name, video_frames, fps, size),
-        'prompt.json': caption(count_objects(clip_dir, meta, min_pixels, min_share), video_frames, fps, size,
+        'prompt.json': caption(count_objects(clip_dir, meta, limits), video_frames, fps, size,
                                meta['camera'].get('fov', 90.0)),
         'manifest.json': {'source_frames': n, 'video_frames': video_frames, 'padding_frames': video_frames - n,
                           'padding': 'repeat_last', 'fps': fps, 'size': list(size)},

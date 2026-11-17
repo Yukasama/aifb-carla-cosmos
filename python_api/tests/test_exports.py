@@ -354,7 +354,7 @@ class ExportTests(unittest.TestCase):
                 self.assertEqual([lb['type'] for lb in json.load(f)], ['Car', 'Cyclist', 'Pedestrian'])
             self.assertEqual(cosmos.count_objects(root, meta), {'vehicles': 1, 'two_wheelers': 1, 'pedestrians': 1})
             # mit Schwelle 0 bekaeme es ein Label (zwei Pixel = 200 Pixel in Full HD)
-            self.assertEqual(cosmos.count_objects(root, meta, min_share=0.0)['vehicles'], 2)
+            self.assertEqual(cosmos.count_objects(root, meta, dair.Limits(min_share=0.0))['vehicles'], 2)
 
     def test_missing_labels_fail(self):
         with tempfile.TemporaryDirectory() as root:

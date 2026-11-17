@@ -14,10 +14,11 @@ leiten BEVHeight und CoBEV die Hoehe ueber Grund ab. Hier: Ursprung auf der Fahr
 unter der Kamera, z senkrecht zur Fahrbahn nach oben, x in Blickrichtung, y nach links. Die
 Fahrbahnebene wird aus den Strassenpixeln von Tiefen- und Segmentierungsbild geschaetzt.
 
-Ein Label bekommt nur, was die Kamera wirklich sieht: mindestens MIN_PIXELS eigene Pixel (auf
-1920 x 1080 umgerechnet) und mindestens MIN_SHARE der Box sichtbar, also im Bild und nicht
-verdeckt (View.visibility). Aufgezeichnet wird jedes Objekt ab einem Pixel; die zu wenig
-sichtbaren zaehlt meta.json unter "hidden". Sie gelten nicht als unbeschriftet.
+Ein Label bekommt nur, was die Kamera wirklich sieht und nah genug ist: Boxmitte hoechstens
+MAX_DISTANCE von der Kamera, mindestens MIN_PIXELS eigene Pixel (auf 1920 x 1080 umgerechnet) und
+mindestens MIN_SHARE der Box sichtbar, also im Bild und nicht verdeckt (View.visibility).
+Aufgezeichnet wird jedes Objekt ab einem Pixel; die ohne Label zaehlt meta.json unter "hidden".
+Sie gelten nicht als unbeschriftet.
 
 3D-Box wie DAIR: 3d_location = Mittelpunkt, 3d_dimensions h/w/l, rotation = Gierwinkel um z
 (0 = Fahrzeug zeigt entlang x). 2D-Box: eng um die sichtbaren Pixel. occluded_state (0 frei,
@@ -25,6 +26,7 @@ sichtbaren zaehlt meta.json unter "hidden". Sie gelten nicht als unbeschriftet.
 abgeschnitten) bestimmen nur die Schwierigkeitsstufen der Auswertung.
 """
 
+import collections
 import json
 import math
 import os
@@ -47,10 +49,14 @@ MAX_RANGE = 200.0      # m, weiter weg keine Punkte
 NEAR = 0.1             # m vor der Kamera
 OCCLUDER_MARGIN = 0.5  # m: naeher als die Box minus dieser Abstand = verdeckt sie
 UNLABELED_MIN = 1      # jedes sichtbare Objekt braucht ein Label
-# Ab wann ein Objekt sichtbar ist und ein Label bekommt. Darunter (ein paar Pixel durchs Laub,
-# ein Dachrand hinter einem Lkw, ein Rest am Bildrand) koennte es kein Detektor finden.
-MIN_PIXELS = 50        # eigene Pixel, auf 1920 x 1080 umgerechnet
+# Wann ein Objekt ein Label bekommt. Darunter (ein paar Pixel durchs Laub, ein Dachrand hinter
+# einem Lkw, ein Rest am Bildrand) koennte es kein Detektor finden; weiter weg zaehlt es nicht.
+MIN_PIXELS = 10        # eigene Pixel, auf 1920 x 1080 umgerechnet
 MIN_SHARE = 0.05       # sichtbarer Anteil der Box: Anteil im Bild x unverdeckter Anteil
+MAX_DISTANCE = 150.0   # m von der Kamera bis zur Boxmitte, 0 = unbegrenzt
+Limits = collections.namedtuple('Limits', 'min_pixels min_share max_distance',
+                                defaults=(MIN_PIXELS, MIN_SHARE, MAX_DISTANCE))
+LIMITS = Limits()
 
 
 def _read(path):
@@ -125,12 +131,14 @@ class View:
         self.w, self.h = camera['width'], camera['height']
         self.K = np.array(camera['intrinsics'])  # Aufnahmegroesse, Pixelkanten-Konvention
         t = camera['transform']
+        self.origin = _vec(t['location'])
         self.w2c = np.linalg.inv(ue_matrix(t['location'], t['rotation']))
         self.rect = np.array([[0, 0], [self.w, 0], [self.w, self.h], [0, self.h]], np.float32)
 
     def visibility(self, obj, px, depth):
-        """({'pixels', 'in_frame', 'unoccluded', 'share'}, (ys, xs) seiner Pixel) eines Objekts; px: Pixels.
+        """({'distance', 'pixels', 'in_frame', 'unoccluded', 'share'}, (ys, xs) seiner Pixel) eines Objekts; px: Pixels.
 
+        distance: Kamera bis Boxmitte in m.
         pixels: Fahrzeug-/Personenpixel mit seiner Actor-ID. in_frame: Anteil der projizierten Box im Bild.
         unoccluded: sichtbare / (sichtbare + verdeckende) Pixel im Bildteil der Box; verdeckend ist ein
         fremdes Pixel, das mehr als OCCLUDER_MARGIN naeher ist als die naechste Boxecke.
@@ -138,7 +146,8 @@ class View:
         """
         own = px.of(obj['id'])
         pixels = len(own[0])
-        vis = {'pixels': pixels, 'in_frame': 0.0, 'unoccluded': 0.0, 'share': 0.0}
+        distance = float(np.linalg.norm(_vec(obj['bbox_3d']['center']) - self.origin))
+        vis = {'distance': distance, 'pixels': pixels, 'in_frame': 0.0, 'unoccluded': 0.0, 'share': 0.0}
         verts = world_vertices(obj['bbox_3d'])
         proj = project_box(verts, self.w2c, self.K, self.w, self.h)  # an der Nahebene geschnitten
         if not pixels or proj is None:
@@ -163,13 +172,14 @@ class View:
         vis.update(in_frame=in_frame, unoccluded=unoccluded, share=in_frame * unoccluded)
         return vis, own
 
-    def labeled(self, vis, min_pixels=MIN_PIXELS, min_share=MIN_SHARE):
-        """Genug zu sehen fuer ein Label: Pixel (auf 1920 x 1080 umgerechnet) und sichtbarer Anteil."""
+    def labeled(self, vis, limits=LIMITS):
+        """Label ja/nein (limits: Limits): nah genug, genug Pixel (auf 1920 x 1080 umgerechnet) und sichtbarer Anteil."""
         fullhd = vis['pixels'] * SIZE[0] * SIZE[1] / (self.w * self.h)
-        return vis['pixels'] > 0 and fullhd >= min_pixels and vis['share'] >= min_share
+        near = not limits.max_distance or vis['distance'] <= limits.max_distance
+        return near and vis['pixels'] > 0 and fullhd >= limits.min_pixels and vis['share'] >= limits.min_share
 
 
-def visible_objects(clip_dir, meta, i, min_pixels=MIN_PIXELS, min_share=MIN_SHARE):
+def visible_objects(clip_dir, meta, i, limits=LIMITS):
     """Aufgezeichnete Objekte von Frame i, die ein Label bekommen (fuer die Objektzahlen im Cosmos-Prompt)."""
     images, label_path = frame_paths(clip_dir, meta, i)
     tags, ids = decode_instance(_read(images['instance']))
@@ -177,7 +187,7 @@ def visible_objects(clip_dir, meta, i, min_pixels=MIN_PIXELS, min_share=MIN_SHAR
     with open(label_path, encoding='utf-8') as f:
         objs = json.load(f)['objects']
     view, px = View(meta['camera']), Pixels(ids, tags)
-    return [o for o in objs if view.labeled(view.visibility(o, px, depth)[0], min_pixels, min_share)]
+    return [o for o in objs if view.labeled(view.visibility(o, px, depth)[0], limits)]
 
 
 class Frame:
@@ -210,10 +220,11 @@ class Frame:
         e = b['extent']
         return center, 2 * e['x'], 2 * e['y'], 2 * e['z'], math.atan2(heading[1], heading[0])
 
-    def label(self, obj, px, depth, min_pixels=MIN_PIXELS, min_share=MIN_SHARE):
-        """DAIR-Label eines Objekts (px: Pixels des Frames), None wenn es zu wenig sichtbar ist (View.labeled)."""
+    def label(self, obj, px, depth, limits=LIMITS):
+        """DAIR-Label eines Objekts (px: Pixels des Frames), None wenn es zu weit weg oder zu wenig sichtbar
+        ist (View.labeled)."""
         vis, (ys, xs) = self.view.visibility(obj, px, depth)
-        if not self.view.labeled(vis, min_pixels, min_share):
+        if not self.view.labeled(vis, limits):
             return None
         center, l, w, h, yaw = self.box(obj)
         c, s = math.cos(yaw), math.sin(yaw)
@@ -289,7 +300,7 @@ def unlabeled(tags, ids, labeled):
     return int(np.count_nonzero(counts >= UNLABELED_MIN))
 
 
-def build(clip_dir, meta, out, every=1, allow_unlabeled=False, min_pixels=MIN_PIXELS, min_share=MIN_SHARE):
+def build(clip_dir, meta, out, every=1, allow_unlabeled=False, limits=LIMITS):
     """<clip>/dair/-Inhalt nach out schreiben (Ordner existiert und ist leer)."""
     for sub in ('calib', 'label', 'velodyne'):
         os.makedirs(os.path.join(out, sub))
@@ -311,11 +322,11 @@ def build(clip_dir, meta, out, every=1, allow_unlabeled=False, min_pixels=MIN_PI
         with open(label_path, encoding='utf-8') as f:
             objs = json.load(f)['objects']
         px = Pixels(ids, tags)
-        labels = [lb for lb in (fr.label(o, px, depth, min_pixels, min_share) for o in objs) if lb is not None]
+        labels = [lb for lb in (fr.label(o, px, depth, limits) for o in objs) if lb is not None]
         objects += len(labels)
         if len(objs) > len(labels):
             hidden['%04d' % i] = len(objs) - len(labels)
-        n = unlabeled(tags, ids, [o['id'] for o in objs])  # zu wenig sichtbare haben einen Actor, zaehlen nicht
+        n = unlabeled(tags, ids, [o['id'] for o in objs])  # die ohne Label haben einen Actor, zaehlen nicht
         if n:
             missing['%04d' % i] = n
         with open(os.path.join(out, 'label', '%04d.json' % i), 'w', encoding='utf-8') as f:
@@ -328,8 +339,8 @@ def build(clip_dir, meta, out, every=1, allow_unlabeled=False, min_pixels=MIN_PI
         'objects': objects,
         'camera_height': _r(fr.ground_cv[2, 3], 3),
         'ground': {'normal': [_r(v, 6) for v in normal], 'point': [_r(v, 3) for v in point]},  # Welt, rechtshaendig
-        'visibility': {'min_pixels': min_pixels, 'min_share': min_share},  # Schwellen fuer ein Label
-        'hidden': hidden,      # Frame -> aufgezeichnete Objekte, zu wenig sichtbar fuer ein Label
+        'visibility': dict(limits._asdict()),  # Schwellen fuer ein Label
+        'hidden': hidden,      # Frame -> aufgezeichnete Objekte ohne Label: zu weit weg oder zu wenig sichtbar
         'unlabeled': missing,  # Frame -> Fahrzeuge/Personen im Bild ohne Actor (ohne 3D-Box)
     }
     with open(os.path.join(out, 'meta.json'), 'w', encoding='utf-8') as f:

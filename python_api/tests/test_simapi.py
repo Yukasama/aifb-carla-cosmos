@@ -465,7 +465,7 @@ def test_dair_labels():
     vis, _ = fr.view.visibility(car_record(0), px5, depth5)
     assert 0 < vis['pixels'] and vis['in_frame'] > 0.999 and vis['share'] < dair.MIN_SHARE
     assert fr.label(car_record(0), px5, depth5) is None
-    assert fr.label(car_record(0), px5, depth5, min_share=0.0) is not None  # Schwelle einstellbar
+    assert fr.label(car_record(0), px5, depth5, dair.Limits(min_share=0.0)) is not None  # Schwelle einstellbar
 
     # links aus dem Bild ragend: gut die Haelfte im Bild bekommt ein Label, ein Rest am Rand nicht
     edge = (300, 14, car_at(0, y=-23, yaw=0), car_box())
@@ -486,9 +486,15 @@ def test_dair_labels():
     assert fr.label(car_record(0), px7, depth)['2d_box'] == lb['2d_box']
 
     # Pixelschwelle gilt fuer 1920 x 1080: ein Pixel dieser Aufnahme (192 x 108) zaehlt wie 100
-    assert fr.view.labeled({'pixels': 1, 'share': 1.0}, min_pixels=100)
-    assert not fr.view.labeled({'pixels': 1, 'share': 1.0}, min_pixels=101)
-    assert not fr.view.labeled({'pixels': 0, 'share': 1.0}, min_pixels=0)
+    seen = {'distance': 20.0, 'pixels': 1, 'share': 1.0}
+    assert fr.view.labeled(seen, dair.Limits(min_pixels=100))
+    assert not fr.view.labeled(seen, dair.Limits(min_pixels=101))
+    assert not fr.view.labeled(dict(seen, pixels=0), dair.Limits(min_pixels=0))
+    # Default: ab 10 Pixeln und 5 % bis 150 m (Kamera bis Boxmitte), weiter weg nie
+    assert fr.view.labeled(dict(seen, distance=150.0, share=0.05))
+    assert not fr.view.labeled(dict(seen, distance=150.1))
+    assert fr.view.labeled(dict(seen, distance=500.0), dair.Limits(max_distance=0))  # 0 = unbegrenzt
+    assert np.isclose(vis['distance'], np.linalg.norm([20, 3, 0.75 - 12]))  # Kamera (0, 0, 12), Boxmitte (20, 3, 0.75)
 
     # Punktwolke: Strasse auf z = 0, Auto (hier eine flache Attrappe) darueber
     pts = fr.points(depth, tags)
