@@ -34,6 +34,7 @@ PARTIAL = '.partial'
 PNG = [cv2.IMWRITE_PNG_COMPRESSION, 1]
 WRITERS = 6
 MAX_PENDING = 30  # Bilder in der Warteschlange, danach wartet die Simulation
+CONVERT_NICE = 10  # Linux: nice der Umwandlungen (Windows: BELOW_NORMAL_PRIORITY_CLASS)
 
 
 def _write_png(path, bgr):
@@ -162,11 +163,21 @@ class Recorder:
 
 
 def start_conversion(clip_dir, drop_frames=False, extra=()):
-    """Cosmos-Eingabe und Detektor-Labels im Hintergrund bauen (eigener Prozess, ueberlebt das Ende der Simulation)."""
+    """Cosmos-Eingabe und Detektor-Labels im Hintergrund bauen (eigener Prozess, ueberlebt das Ende der Simulation).
+
+    Mit niedrigerer Prioritaet, die auch die ffmpeg-Prozesse der Umwandlung erben: Simulation und Aufnahme
+    bekommen die CPU zuerst, die Umwandlung den Rest.
+    """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    kwargs = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'
-              else {'start_new_session': True})
+    kwargs = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.BELOW_NORMAL_PRIORITY_CLASS}
+              if os.name == 'nt' else {'start_new_session': True})
     argv = [sys.executable, '-m', 'simapi.convert', os.path.abspath(clip_dir)] + \
         (['--drop-frames'] if drop_frames else []) + list(extra)
     with open(os.path.join(clip_dir, 'convert.log'), 'w', encoding='utf-8') as out:
-        return subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kwargs)
+        proc = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, **kwargs)
+    if os.name != 'nt':
+        try:  # gleich nach dem Start, lange bevor die Umwandlung ffmpeg startet
+            os.setpriority(os.PRIO_PROCESS, proc.pid, CONVERT_NICE)
+        except OSError:
+            pass  # schon beendet
+    return proc

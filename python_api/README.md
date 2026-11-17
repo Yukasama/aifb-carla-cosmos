@@ -9,6 +9,7 @@ uv sync
 .venv/bin/python -m simapi --hide-occluded --export   # alle Flags: --help
 .venv/bin/python record_scenes.py                     # headless aufnehmen: 20000 Frames aus allen Kamerapositionen
 .venv/bin/python -m simapi.convert _out               # Clips umwandeln (passiert sonst automatisch)
+.venv/bin/python -m simapi.overlay _out/<clip>        # Labels ins Bild zeichnen: <clip>/overlay-carla.mp4
 .venv/bin/python -m simapi.dataset _out --cosmos <ergebnisse> --out <ordner>   # Datensatz im DAIR-V2X-I-Format
 .venv/bin/python tests/test_simapi.py                 # Selbsttest ohne laufenden Server, mit CARLA-Wheel
 .venv/bin/python -m unittest discover -s tests -p test_exports.py -v  # ohne CARLA-Wheel
@@ -136,6 +137,18 @@ Ein Label pro sichtbarem Objekt bis `--max-distance` (Default 150 m, Kamera bis 
 `occluded_state` und `truncated_state` steuern nur die Schwierigkeitsstufen der Auswertung. Fahrzeuge oder Personen im Bild ohne Actor und damit ohne 3D-Box (etwa geparkte Autos, die zur Karte gehören statt Actors zu sein; `record_scenes.py` blendet sie aus) meldet `convert.log`, und `meta.json` zählt sie pro Frame unter `unlabeled`; die absichtlich ausgelassenen (zu weit weg oder zu wenig sichtbar) stehen getrennt unter `hidden`.
 
 Ohne `--allow-unlabeled` scheitert die Umwandlung bereits ab einer sichtbaren Instanz ohne Actor. Andere Schwellen gelten nach `python -m simapi.convert <ordner> --force --min-share 0.1` (Rohbilder nötig). Die Bodenebene ist eine Schätzung aus Straßenpixeln; bei mehreren Fahrbahnhöhen oder stark gekrümmter Straße ist die Kalibrierung visuell zu kontrollieren. Die exportierten Detektorboxen verwenden aufrechte Boxen und einen Gierwinkel wie DAIR.
+
+### Labels ansehen
+
+```sh
+.venv/bin/python -m simapi.overlay _out/<clip>                          # CARLA-Bild: <clip>/overlay-carla.mp4
+.venv/bin/python -m simapi.overlay _out/<clip> --cosmos <ergebnisse>    # Cosmos-Ergebnis: <clip>/overlay-<ergebnisse>.mp4
+.venv/bin/python -m simapi.overlay _out/<clip> --hidden --2d            # dazu Objekte ohne Label und 2D-Boxen
+.venv/bin/python -m simapi.overlay _out/<clip> --frames 0 40 --out bilder/   # einzelne Frames als JPG
+.venv/bin/python -m simapi.overlay _out                                 # jeder Clip des Exports
+```
+
+Zeichnet genau das, was `simapi.dataset` in den Datensatz schreibt: die Labels aus `dair/label/`, projiziert mit `dair/calib/`, in das Bild, auf dem trainiert wird (ohne `--cosmos` `cosmos/rgb.mp4`, sonst das Cosmos-Ergebnis wie bei `simapi.dataset --cosmos`). Damit lässt sich prüfen, ob Cosmos die Objekte dort lässt, wo die CARLA-Boxen liegen, und ob die geschätzte Bodenebene stimmt. Farben nach Auswerteklasse (Car mit Van/Truck/Bus, Cyclist mit Motorcyclist, Pedestrian); der Strich am Boden zeigt die Fahrtrichtung, der Text Typ, Entfernung und `o`/`t` für `occluded_state`/`truncated_state`. Grau sind Labels außerhalb des BEV-Rasters der Detektoren (x 0–102,4 m, y ±51,2 m; sein Rand ist gelb auf die Fahrbahn gezeichnet): Sie stehen im Datensatz, liegen aber nicht im Raster des Detektors. `--hidden` zeigt aufgezeichnete Objekte ohne Label rot gestrichelt (zu weit weg oder zu wenig sichtbar, braucht `frames/*.json`). Unter dem Bild steht eine Infozeile mit Frame, Bildquelle und Zahl der Labels. Das Video ist H.264 (yuv420p) und läuft in jedem Player; `--size 1280x720` zeigt die Trainingsgröße ohne `--fullhd`.
 
 ### Datensatz bauen
 

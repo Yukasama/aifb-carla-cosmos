@@ -17,10 +17,16 @@ import shutil
 import sys
 import time
 
+import cv2
+
 from . import cosmos, dair
 
 log = logging.getLogger('simapi.convert')
 OUTPUTS = ('cosmos', 'dair')
+# Threads pro OpenCV-Aufruf. cosmos.build rechnet schon in eigenen Threads (cosmos.WORKERS); mit dem Default
+# (ein Thread je Kern) kostete ein Frame gemessen 75 % mehr CPU-Zeit fuer 25 % weniger Laufzeit, und die
+# fehlt der Aufnahme, neben der die Umwandlung laeuft. Mit 2 statt 1 rund 3 % mehr CPU, 8 % schneller.
+OPENCV_THREADS = 2
 
 
 def replace_dir(src, dst, tries=40, wait=0.25):
@@ -71,14 +77,15 @@ def convert(clip, args):
         log.info('%s: schon umgewandelt (--force baut neu)', clip)
 
     limits = dair.Limits(args.min_pixels, args.min_share, args.max_distance)
+    classes = {}  # Frame -> Klassen der Objekte mit Label: sammelt dair.build, zaehlt der Cosmos-Prompt
 
     def videos(out):
         n = cosmos.build(clip, meta, out, args.size, args.edge_preset, args.blur_preset, args.crf, args.prompt,
-                         limits)
+                         limits, classes)
         log.info('%s: Cosmos-Eingabe, %d Frames, %dx%d, %d Segmente', clip, meta['frames'], *args.size, n)
 
     def labels(out):
-        info = dair.build(clip, meta, out, args.every, args.allow_unlabeled, limits)
+        info = dair.build(clip, meta, out, args.every, args.allow_unlabeled, limits, classes)
         log.info('%s: DAIR-Labels fuer %d Frames, %d Objekte (%d ohne Label: zu weit weg oder zu wenig sichtbar), '
                  'Kamera %.1f m ueber der Fahrbahn', clip, len(info['frames']), info['objects'],
                  sum(info['hidden'].values()), info['camera_height'])
@@ -86,8 +93,10 @@ def convert(clip, args):
             log.warning('%s: Fahrzeuge oder Personen ohne Actor (ohne 3D-Box) im Bild (Frame: Anzahl) %s',
                         clip, info['unlabeled'])
 
-    _build(clip, 'cosmos', videos, args.force)
+    # DAIR zuerst: Es rechnet ohnehin fuer jedes Objekt die Sichtbarkeit, der Cosmos-Prompt uebernimmt daraus die
+    # Objektzahlen (sonst liest count_objects Tiefe und Instanzbild jedes Frames noch einmal)
     _build(clip, 'dair', labels, args.force)
+    _build(clip, 'cosmos', videos, args.force)
     if args.drop_frames and have_frames:
         shutil.rmtree(os.path.join(clip, 'frames'))
         log.info('%s: Rohbilder geloescht', clip)
@@ -154,6 +163,7 @@ def main(argv=None):
                    help='Label nur bis zu dieser Entfernung Kamera-Boxmitte in m, 0 = unbegrenzt (Default %(default)g)')
     args = p.parse_args(argv)
     logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.INFO)
+    cv2.setNumThreads(OPENCV_THREADS)
 
     clips = list(find_clips(args.paths))
     if not clips:

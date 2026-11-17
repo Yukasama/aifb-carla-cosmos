@@ -52,6 +52,8 @@ BLUR_PRESETS = {'very_low': (1, 4), 'low': (4, 4), 'medium': (2, 10),
 BILATERAL = (30, 150, 100)  # d, sigma_color, sigma_space
 # Klassen, deren Objekte einzeln gefaerbt werden (CARLA-Tags): Mast, Ampel, Schild, Fussgaenger, Fahrer, Auto..Fahrrad
 THINGS = np.array([6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19])
+# Jeder Schluessel aus segment_keys ist kleiner: Dinge (Klasse << 16) | ID, sonst die Klasse (< 256)
+SEG_KEYS = (int(THINGS.max()) + 1) << 16
 PROMPT = ('A fixed traffic camera mounted high on a building looks down at an urban street with cars and '
           'pedestrians. Static camera, no camera motion. Realistic cars, real asphalt and sidewalk textures, '
           'natural lighting and shadows. Photorealistic, high detail.')
@@ -87,14 +89,21 @@ def segment_color(key):
 
 
 def seg_frame(inst_bgr, size, colors):
-    """Instanzbild -> Farbsegmente in size; Pixel exakt (naechster Nachbar), colors: Cache Schluessel -> Farbe."""
+    """Instanzbild -> Farbsegmente in size; Pixel exakt (naechster Nachbar), colors: Cache Schluessel -> Farbe.
+
+    Farbtabelle mit einer Zeile pro moeglichem Schluessel (SEG_KEYS), gefuellt nur fuer die Schluessel im Bild:
+    Jedes Pixel schlaegt seine Farbe direkt nach, statt dass alle Schluessel sortiert werden (np.unique, 4-5x
+    langsamer bei gleichem Ergebnis).
+    """
     keys = segment_keys(cv2.resize(inst_bgr, size, interpolation=cv2.INTER_NEAREST_EXACT))
-    uniq, inv = np.unique(keys, return_inverse=True)
-    for k in uniq.tolist():
+    seen = np.zeros(SEG_KEYS, bool)
+    seen[keys.ravel()] = True
+    lut = np.zeros((SEG_KEYS, 3), np.uint8)
+    for k in np.flatnonzero(seen).tolist():
         if k not in colors:
             colors[k] = segment_color(k)
-    palette = np.array([colors[k] for k in uniq.tolist()], np.uint8)
-    return palette[inv.reshape(keys.shape)]
+        lut[k] = colors[k]
+    return np.take(lut, keys, axis=0)
 
 
 def edge_frame(rgb, preset='medium'):
@@ -193,9 +202,13 @@ def count_objects(clip_dir, meta, limits=dair.LIMITS):
     def frame_classes(i):
         return [o['class'] for o in dair.visible_objects(clip_dir, meta, i, limits)]
 
-    most = {'vehicles': 0, 'two_wheelers': 0, 'pedestrians': 0}
     with ThreadPoolExecutor(WORKERS) as pool:
-        per_frame = list(pool.map(frame_classes, range(meta['frames'])))
+        return most_objects(pool.map(frame_classes, range(meta['frames'])))
+
+
+def most_objects(per_frame):
+    """Klassen der beschrifteten Objekte pro Frame -> hoechste Zahl gleichzeitig (wie count_objects)."""
+    most = {'vehicles': 0, 'two_wheelers': 0, 'pedestrians': 0}
     for classes in per_frame:
         n = {'pedestrians': classes.count('pedestrian'),
              'two_wheelers': sum(c in ('bicycle', 'motorcycle') for c in classes)}
@@ -273,9 +286,18 @@ def caption(counts, frames, fps, size, fov=90.0):
     }
 
 
-def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, prompt=PROMPT, limits=dair.LIMITS):
-    """<clip>/cosmos/-Inhalt nach out schreiben (Ordner existiert und ist leer)."""
+def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, prompt=PROMPT, limits=dair.LIMITS,
+          classes=None):
+    """<clip>/cosmos/-Inhalt nach out schreiben (Ordner existiert und ist leer).
+
+    classes: Frame -> Klassen der Objekte mit Label, wie dair.build sie mit denselben limits sammelt. Fehlt
+    darin ein Frame (DAIR schon vorhanden oder nur jeder N-te Frame), zaehlt count_objects selbst.
+    """
     n, fps = meta['frames'], meta['fps']
+    if classes is not None and all(i in classes for i in range(n)):
+        counts = most_objects(classes[i] for i in range(n))
+    else:
+        counts = count_objects(clip_dir, meta, limits)
     # Beide Tokenizer komprimieren zeitlich. Kurze Restclips bis mindestens 93 bzw. 4k+1
     # auffuellen; nur die originalen n Frames bekommen Labels und zaehlen zur Aufnahme.
     video_frames = max(93, 1 + 4 * math.ceil((n - 1) / 4))
@@ -317,8 +339,7 @@ def build(clip_dir, meta, out, size=SIZE, edge='medium', blur='medium', crf=0, p
     specs = {
         'transfer2.5.json': transfer25_spec(name, prompt),
         'cosmos3.json': cosmos3_spec(name, video_frames, fps, size),
-        'prompt.json': caption(count_objects(clip_dir, meta, limits), video_frames, fps, size,
-                               meta['camera'].get('fov', 90.0)),
+        'prompt.json': caption(counts, video_frames, fps, size, meta['camera'].get('fov', 90.0)),
         'manifest.json': {'source_frames': n, 'video_frames': video_frames, 'padding_frames': video_frames - n,
                           'padding': 'repeat_last', 'fps': fps, 'size': list(size)},
     }

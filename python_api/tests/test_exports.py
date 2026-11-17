@@ -12,11 +12,11 @@ import cv2
 import numpy as np
 
 import record_scenes as rs
-from simapi import convert, cosmos, dair, dataset
+from simapi import convert, cosmos, dair, dataset, overlay
 from simapi.camera import Rig
 from simapi.clips import Recorder
 from simapi.config import RESOLUTIONS, build_parser
-from simapi.geometry import intrinsics, matrix_rotation, project_box, ue_matrix, world_from_cv
+from simapi.geometry import intrinsics, matrix_rotation, project_box, to_camera, ue_matrix, world_from_cv
 
 
 def write_json(path, value):
@@ -348,13 +348,51 @@ class ExportTests(unittest.TestCase):
 
             out = os.path.join(root, 'dair')
             os.makedirs(out)
-            info = dair.build(root, meta, out)  # kein Fehler wegen unbeschrifteter Objekte
+            classes = {}
+            info = dair.build(root, meta, out, classes=classes)  # kein Fehler wegen unbeschrifteter Objekte
             self.assertEqual((info['objects'], info['hidden'], info['unlabeled']), (6, {'0000': 1, '0001': 1}, {}))
             with open(os.path.join(out, 'label', '0001.json')) as f:
                 self.assertEqual([lb['type'] for lb in json.load(f)], ['Car', 'Cyclist', 'Pedestrian'])
             self.assertEqual(cosmos.count_objects(root, meta), {'vehicles': 1, 'two_wheelers': 1, 'pedestrians': 1})
+            # dair.build sammelt pro Frame genau die Objekte, die count_objects zaehlt (convert nutzt das)
+            self.assertEqual(sorted(classes), list(range(meta['frames'])))
+            self.assertEqual(cosmos.most_objects(classes.values()), cosmos.count_objects(root, meta))
             # mit Schwelle 0 bekaeme es ein Label (zwei Pixel = 200 Pixel in Full HD)
             self.assertEqual(cosmos.count_objects(root, meta, dair.Limits(min_share=0.0))['vehicles'], 2)
+
+    def test_overlay_draws_labels_where_the_camera_sees_them(self):
+        with tempfile.TemporaryDirectory() as root:
+            clip = os.path.join(root, 'clip')
+            meta = fixture(clip)
+            self.assertEqual(convert.main([clip, '--size', '96x54']), 0)
+            # dair/calib bildet die Boxmitte dorthin ab, wo die Aufnahmekamera sie sieht (in 1920 x 1080)
+            cam = overlay.Camera(os.path.join(clip, 'dair', 'calib'), dair.SIZE)
+            with open(os.path.join(clip, 'dair', 'label', '0000.json')) as f:
+                labels = json.load(f)
+            with open(os.path.join(clip, 'frames', '0000.json')) as f:
+                objects = json.load(f)['objects']
+            view = dair.View(meta['camera'])
+            scale = dair.SIZE[0] / meta['camera']['width']
+            for lb, obj in zip(labels, objects):
+                loc, _ = overlay.box_of(lb)
+                self.assertTrue(overlay.in_bev(loc))
+                p = cam.to_camera([loc])[0]
+                c = to_camera(np.array([[obj['bbox_3d']['center'][k] for k in 'xyz']]), view.w2c)[0]
+                expected = (view.K @ c)[:2] / c[2] * scale - 0.5  # Pixelkanten -> Pixelmitten
+                np.testing.assert_allclose((cam.K @ p)[:2] / p[2], expected, atol=0.5)
+
+            video = os.path.join(root, 'labels.mp4')
+            self.assertEqual(overlay.main([clip, '--out', video, '--size', '320x180']), 0)
+            frames, (w, h) = dataset.frames_of(video, {0, 81}, 82)  # nur beschriftete Frames, kein Padding
+            self.assertEqual(w, 320)
+            self.assertGreater(h, 180)
+            jpgs = os.path.join(root, 'jpg')
+            self.assertEqual(overlay.main([clip, '--out', jpgs, '--frames', '0', '81', '--hidden', '--2d']), 0)
+            self.assertEqual(sorted(os.listdir(jpgs)), ['0000.jpg', '0081.jpg'])
+            img = cv2.cvtColor(cv2.imread(os.path.join(jpgs, '0081.jpg')), cv2.COLOR_BGR2RGB)
+            for color in overlay.COLORS.values():
+                self.assertTrue((np.abs(img.astype(int) - color).max(2) < 40).any())
+            self.assertEqual(overlay.main([clip, '--out', jpgs, '--frames', '82']), 1)  # Padding hat kein Label
 
     def test_missing_labels_fail(self):
         with tempfile.TemporaryDirectory() as root:

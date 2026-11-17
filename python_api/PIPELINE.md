@@ -115,6 +115,6 @@ uv run python -m unittest discover -s tests -p test_pipeline.py -v
 uv run python -m unittest discover -s tests -p test_exports.py -v
 ```
 
-Die CPU-Tests prüfen Fehlerabbrüche, Offline-Umgebung, Python-3.8-Syntax von run_detector.py, Sim-Transfer-Anfragen, Eingabe-Splits, Varianten, Pfadübergaben und Prozessfehler. Ein vollständiger GPU-Lauf ist damit nicht nachgewiesen. Cosmos-Bilder vor dem Detektortraining auf geometrische Übereinstimmung mit den CARLA-Labels kontrollieren.
+Die CPU-Tests prüfen Fehlerabbrüche, Offline-Umgebung, Python-3.8-Syntax von run_detector.py, Sim-Transfer-Anfragen, Eingabe-Splits, Varianten, Pfadübergaben und Prozessfehler. Ein vollständiger GPU-Lauf ist damit nicht nachgewiesen. Cosmos-Bilder vor dem Detektortraining auf geometrische Übereinstimmung mit den CARLA-Labels kontrollieren, etwa mit `python -m simapi.overlay <clip> --cosmos <cosmos-ausgabe>/results` (Labels ins Ergebnisvideo gezeichnet, siehe README).
 
 Quellen: [Cosmos Transfer 2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5), [Cosmos Framework](https://github.com/NVIDIA/cosmos-framework), [BEVHeight++](https://github.com/yanglei18/BEVHeight_Plus), [CoBEV](https://github.com/MasterHow/CoBEV), [HeightFormer](https://github.com/zhangzhang2024/HeightFormer). Geänderte Upstream-APIs können eine Adapteranpassung erfordern.

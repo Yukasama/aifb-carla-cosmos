@@ -300,8 +300,12 @@ def unlabeled(tags, ids, labeled):
     return int(np.count_nonzero(counts >= UNLABELED_MIN))
 
 
-def build(clip_dir, meta, out, every=1, allow_unlabeled=False, limits=LIMITS):
-    """<clip>/dair/-Inhalt nach out schreiben (Ordner existiert und ist leer)."""
+def build(clip_dir, meta, out, every=1, allow_unlabeled=False, limits=LIMITS, classes=None):
+    """<clip>/dair/-Inhalt nach out schreiben (Ordner existiert und ist leer).
+
+    classes: Dict oder None; traegt pro bearbeitetem Frame die Klassen der Objekte mit Label ein (dieselben wie
+    visible_objects), damit der Cosmos-Prompt sie zaehlen kann, ohne die Sichtbarkeit noch einmal zu rechnen.
+    """
     for sub in ('calib', 'label', 'velodyne'):
         os.makedirs(os.path.join(out, sub))
     images, _ = frame_paths(clip_dir, meta, 0)
@@ -322,7 +326,14 @@ def build(clip_dir, meta, out, every=1, allow_unlabeled=False, limits=LIMITS):
         with open(label_path, encoding='utf-8') as f:
             objs = json.load(f)['objects']
         px = Pixels(ids, tags)
-        labels = [lb for lb in (fr.label(o, px, depth, limits) for o in objs) if lb is not None]
+        labels, kept = [], []
+        for o in objs:
+            lb = fr.label(o, px, depth, limits)
+            if lb is not None:
+                labels.append(lb)
+                kept.append(o['class'])
+        if classes is not None:
+            classes[i] = kept
         objects += len(labels)
         if len(objs) > len(labels):
             hidden['%04d' % i] = len(objs) - len(labels)

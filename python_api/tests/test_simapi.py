@@ -378,6 +378,10 @@ def test_cosmos_frames():
     seg = cosmos.seg_frame(inst, (5, 1), colors)
     assert (seg[0, 4] == 0).all() and not (seg[0, 0] == seg[0, 1]).all() and (seg[0, 2] == seg[0, 3]).all()
     assert cosmos.segment_color(int(keys[0, 0])) == tuple(seg[0, 0])
+    # Groesster moeglicher Schluessel (Fahrrad, Actor-ID 65535) hat noch eine Zeile in der Farbtabelle
+    inst = carla_instance(np.array([[19, 1]]), np.array([[65535, 0]]))
+    seg = cosmos.seg_frame(inst, (2, 1), {})
+    assert tuple(seg[0, 0]) == cosmos.segment_color((19 << 16) | 65535) and tuple(seg[0, 1]) == cosmos.segment_color(1)
 
     rgb = np.zeros((72, 128, 3), np.uint8)
     rgb[20:50, 40:90] = 255
