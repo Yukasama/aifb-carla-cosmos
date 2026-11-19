@@ -45,3 +45,5 @@ next-env.d.ts
 
 cosmos_samples/cosmos
 cosmos_samples/cosmos_samples
+
+python_api/tmp
